@@ -305,7 +305,7 @@ fn skill_roots_from_layer_stack_inner(
                     });
                 }
             }
-            ConfigLayerSource::User { .. } | ConfigLayerSource::UserOverride { .. } => {
+            ConfigLayerSource::User { .. } => {
                 // Deprecated user skills location (`$CODEX_HOME/skills`), kept for backward
                 // compatibility.
                 roots.push(SkillRoot {
@@ -337,7 +337,7 @@ fn skill_roots_from_layer_stack_inner(
                     plugin_root: None,
                 });
             }
-            ConfigLayerSource::System { .. } | ConfigLayerSource::SystemOverride { .. } => {
+            ConfigLayerSource::System { .. } => {
                 // The system config layer lives under `/etc/codex/` on Unix, so treat
                 // `/etc/codex/skills` as admin-scoped skills.
                 roots.push(SkillRoot {

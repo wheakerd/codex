@@ -271,9 +271,7 @@ fn render_non_file_layer_details(layer: &ConfigLayerEntry) -> Vec<Line<'static>>
             render_mdm_layer_details(layer)
         }
         ConfigLayerSource::System { .. }
-        | ConfigLayerSource::SystemOverride { .. }
         | ConfigLayerSource::User { .. }
-        | ConfigLayerSource::UserOverride { .. }
         | ConfigLayerSource::Project { .. }
         | ConfigLayerSource::ProjectOverride { .. }
         | ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. } => Vec::new(),
@@ -399,14 +397,8 @@ fn format_config_layer_source(source: &ConfigLayerSource) -> String {
         ConfigLayerSource::System { file } => {
             format!("system ({})", file.as_path().display())
         }
-        ConfigLayerSource::SystemOverride { file } => {
-            format!("system override ({})", file.as_path().display())
-        }
         ConfigLayerSource::User { file, .. } => {
             format!("user ({})", file.as_path().display())
-        }
-        ConfigLayerSource::UserOverride { file } => {
-            format!("user override ({})", file.as_path().display())
         }
         ConfigLayerSource::Project { dot_codex_folder } => {
             format!(

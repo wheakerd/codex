@@ -627,9 +627,6 @@ fn override_message(layer: &ConfigLayerSource) -> String {
         ConfigLayerSource::System { file } => {
             format!("Overridden by managed config (system): {}", file.display())
         }
-        ConfigLayerSource::SystemOverride { file } => {
-            format!("Overridden by managed config override: {}", file.display())
-        }
         ConfigLayerSource::Project { dot_codex_folder } => format!(
             "Overridden by project config: {}/{CONFIG_TOML_FILE}",
             dot_codex_folder.display(),
@@ -642,9 +639,6 @@ fn override_message(layer: &ConfigLayerSource) -> String {
         ConfigLayerSource::SessionFlags => "Overridden by session flags".to_string(),
         ConfigLayerSource::User { file, .. } => {
             format!("Overridden by user config: {}", file.display())
-        }
-        ConfigLayerSource::UserOverride { file } => {
-            format!("Overridden by user config override: {}", file.display())
         }
         ConfigLayerSource::LegacyManagedConfigTomlFromFile { file } => {
             format!(
