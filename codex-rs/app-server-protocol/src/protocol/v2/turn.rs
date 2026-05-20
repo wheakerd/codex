@@ -63,6 +63,31 @@ pub struct AdditionalContextEntry {
 )]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct TurnSubmission {
+    pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/start.responsesapiClientMetadata")]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
+    /// Optional client-provided context fragments keyed by an opaque source identifier.
+    #[experimental("turn/start.additionalContext")]
+    pub additional_context: Option<HashMap<String, AdditionalContextEntry>>,
+    /// Optional turn-scoped environments.
+    ///
+    /// Omitted uses the thread sticky environments. Empty disables
+    /// environment access for this turn. Non-empty selects the first
+    /// environment as the current turn environment for this turn.
+    #[experimental("turn/start.environments")]
+    pub environments: Option<Vec<TurnEnvironmentParams>>,
+    /// Optional JSON Schema used to constrain the final assistant message for
+    /// this turn.
+    pub output_schema: Option<JsonValue>,
+}
+
+#[derive(
+    Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
+)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct TurnStartParams {
     pub thread_id: String,
     #[ts(optional = nullable)]

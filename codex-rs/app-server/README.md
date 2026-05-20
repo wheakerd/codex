@@ -149,6 +149,11 @@ Example with notification opt-out:
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
+- `thread/queue/add` — experimental; persist a future turn submission for a loaded thread. The queue stores the turn-scoped submission payload and emits `thread/queue/changed`.
+- `thread/queue/list` — experimental; page through the visible queued turns for a thread with cursor/limit pagination.
+- `thread/queue/delete` — experimental; remove a visible queued turn by id.
+- `thread/queue/reorder` — experimental; replace the visible queue order by queued-turn id.
+- `thread/queue/changed` — experimental notification emitted after visible queue state changes and when a resumed thread replays its queue snapshot.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
 - `thread/unsubscribe` — unsubscribe this connection from thread turn/item events. If this was the last subscriber, the server keeps the thread loaded and unloads it only after it has had no subscribers and no thread activity for 30 minutes, then emits `thread/closed`.
@@ -581,6 +586,32 @@ Use `thread/goal/clear` to remove the current goal.
 { "id": 30, "result": { "cleared": true } }
 { "method": "thread/goal/cleared", "params": { "threadId": "thr_123" } }
 ```
+
+### Example: Queue a follow-up turn
+
+Experimental clients can store a later submission with `thread/queue/add`. The queue item keeps the message and its turn-scoped context. Dispatch uses the thread's current settings, and clients render queue state from server snapshots.
+
+```json
+{ "method": "thread/queue/add", "id": 31, "params": {
+    "threadId": "thr_123",
+    "submission": {
+      "input": [{ "type": "text", "text": "Run the follow-up benchmark" }]
+    }
+} }
+{ "id": 31, "result": { "queuedTurn": {
+    "id": "queued_123",
+    "submission": {
+      "input": [{ "type": "text", "text": "Run the follow-up benchmark" }]
+    },
+    "status": { "type": "pending" }
+} } }
+{ "method": "thread/queue/changed", "params": {
+    "threadId": "thr_123",
+    "queuedTurns": []
+} }
+```
+
+Delete or reorder visible queue rows with `thread/queue/delete` and `thread/queue/reorder`; list order is authoritative for rendering.
 
 ### Example: Archive a thread
 
