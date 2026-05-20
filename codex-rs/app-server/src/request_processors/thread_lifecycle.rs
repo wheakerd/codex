@@ -13,6 +13,7 @@ pub(super) struct ListenerTaskContext {
     pub(super) fallback_model_provider: String,
     pub(super) codex_home: PathBuf,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) thread_queue_processor: ThreadQueueRequestProcessor,
 }
 
 struct UnloadingState {
@@ -260,6 +261,7 @@ pub(super) async fn ensure_listener_task_running(
         thread_list_state_permit,
         fallback_model_provider,
         codex_home,
+        thread_queue_processor,
         ..
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
@@ -284,6 +286,7 @@ pub(super) async fn ensure_listener_task_running(
                         &thread_watch_manager,
                         &outgoing_for_task,
                         &pending_thread_unloads,
+                        &thread_queue_processor,
                         listener_command,
                     )
                     .await;
@@ -300,10 +303,14 @@ pub(super) async fn ensure_listener_task_running(
                     // Track the event before emitting any typed translations
                     // so thread-local state such as raw event opt-in stays
                     // synchronized with the conversation.
-                    let raw_events_enabled = {
+                    let (raw_events_enabled, pending_turn_starts_cleared) = {
                         let mut thread_state = thread_state.lock().await;
-                        thread_state.track_current_turn_event(&event.id, &event.msg);
-                        thread_state.experimental_raw_events
+                        let pending_turn_starts_cleared =
+                            thread_state.track_current_turn_event(&event.id, &event.msg);
+                        (
+                            thread_state.experimental_raw_events,
+                            pending_turn_starts_cleared,
+                        )
                     };
                     let subscribed_connection_ids = thread_state_manager
                         .subscribed_connection_ids(conversation_id)
@@ -339,6 +346,29 @@ pub(super) async fn ensure_listener_task_running(
                         fallback_model_provider.clone(),
                     )
                     .await;
+                    if let EventMsg::TurnStarted(payload) = &event.msg {
+                        thread_queue_processor
+                            .complete_dispatch_after_turn_started(
+                                conversation_id,
+                                payload.turn_id.as_str(),
+                            )
+                            .await;
+                    }
+                    if matches!(
+                        &event.msg,
+                        EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                    ) {
+                        thread_queue_processor
+                            .drain_thread_queue_after_terminal_turn(conversation_id)
+                            .await;
+                    }
+                    if pending_turn_starts_cleared
+                        && matches!(&event.msg, EventMsg::Error(_))
+                    {
+                        thread_queue_processor
+                            .drain_thread_queue_after_terminal_turn(conversation_id)
+                            .await;
+                    }
                 }
                 unloading_watchers_open = unloading_state.wait_for_unloading_trigger() => {
                     if !unloading_watchers_open {
@@ -454,6 +484,7 @@ pub(super) async fn handle_thread_listener_command(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    thread_queue_processor: &ThreadQueueRequestProcessor,
     listener_command: ThreadListenerCommand,
 ) {
     match listener_command {
@@ -467,6 +498,7 @@ pub(super) async fn handle_thread_listener_command(
                 thread_watch_manager,
                 outgoing,
                 pending_thread_unloads,
+                thread_queue_processor,
                 *resume_request,
             )
             .await;
@@ -524,6 +556,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    thread_queue_processor: &ThreadQueueRequestProcessor,
     pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
     let active_turn = {
@@ -697,6 +730,9 @@ pub(super) async fn handle_pending_thread_resume_request(
     {
         tracing::warn!("failed to continue active goal after running-thread resume: {err}");
     }
+    thread_queue_processor
+        .emit_resume_queue_snapshot_and_drain(conversation_id)
+        .await;
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(

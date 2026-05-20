@@ -789,6 +789,7 @@ impl ThreadRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            thread_queue_processor: self.thread_queue_processor.clone(),
         }
     }
 
@@ -889,6 +890,7 @@ impl ThreadRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            thread_queue_processor: self.thread_queue_processor.clone(),
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
@@ -2713,7 +2715,7 @@ impl ThreadRequestProcessor {
                     .emit_resume_goal_snapshot_and_continue(thread_id, codex_thread.as_ref())
                     .await;
                 self.thread_queue_processor
-                    .emit_resume_queue_snapshot(thread_id)
+                    .recover_resume_queue_snapshot_and_drain(thread_id)
                     .await;
             }
             Err(err) => {

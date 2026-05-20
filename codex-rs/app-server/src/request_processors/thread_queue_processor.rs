@@ -10,6 +10,7 @@ pub(crate) struct ThreadQueueRequestProcessor {
     config_manager: ConfigManager,
     state_db: Option<StateDbHandle>,
     thread_state_manager: ThreadStateManager,
+    turn_processor: TurnRequestProcessor,
 }
 
 impl ThreadQueueRequestProcessor {
@@ -19,6 +20,7 @@ impl ThreadQueueRequestProcessor {
         config_manager: ConfigManager,
         state_db: Option<StateDbHandle>,
         thread_state_manager: ThreadStateManager,
+        turn_processor: TurnRequestProcessor,
     ) -> Self {
         Self {
             thread_manager,
@@ -26,6 +28,7 @@ impl ThreadQueueRequestProcessor {
             config_manager,
             state_db,
             thread_state_manager,
+            turn_processor,
         }
     }
 
@@ -85,6 +88,7 @@ impl ThreadQueueRequestProcessor {
             )
             .await;
         self.emit_thread_queue_changed(thread_id).await;
+        self.drain_thread_queue_if_idle(thread_id).await;
         Ok(None)
     }
 
@@ -138,6 +142,7 @@ impl ThreadQueueRequestProcessor {
             .await;
         if deleted {
             self.emit_thread_queue_changed(thread_id).await;
+            self.drain_thread_queue_if_idle(thread_id).await;
         }
         Ok(None)
     }
@@ -169,14 +174,206 @@ impl ThreadQueueRequestProcessor {
             .await;
         self.send_thread_queue_changed(thread_id, queued_turns)
             .await;
+        self.drain_thread_queue_if_idle(thread_id).await;
         Ok(None)
     }
 
-    pub(crate) async fn emit_resume_queue_snapshot(&self, thread_id: ThreadId) {
+    pub(crate) async fn recover_resume_queue_snapshot_and_drain(&self, thread_id: ThreadId) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let failure = turn_error("queued turn dispatch was interrupted while app-server restarted");
+        let failure_json = match serde_json::to_vec(&failure) {
+            Ok(failure_json) => failure_json,
+            Err(err) => {
+                tracing::warn!("failed to serialize queued turn recovery failure: {err}");
+                return;
+            }
+        };
+        match state_db
+            .thread_queue()
+            .recover_dispatching_thread_queued_turns(thread_id, failure_json.as_slice())
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!("failed to recover queued turns for thread {thread_id}: {err}");
+                return;
+            }
+        }
         if self.require_enabled().await.is_err() {
             return;
         }
         self.emit_thread_queue_changed(thread_id).await;
+        self.drain_thread_queue_if_idle(thread_id).await;
+    }
+
+    pub(crate) async fn emit_resume_queue_snapshot_and_drain(&self, thread_id: ThreadId) {
+        if self.require_enabled().await.is_err() {
+            return;
+        }
+        self.emit_thread_queue_changed(thread_id).await;
+        self.drain_thread_queue_if_idle(thread_id).await;
+    }
+
+    pub(crate) async fn drain_thread_queue_after_terminal_turn(&self, thread_id: ThreadId) {
+        self.drain_thread_queue_if_idle(thread_id).await;
+    }
+
+    pub(crate) async fn complete_dispatch_after_turn_started(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+    ) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        match state_db
+            .thread_queue()
+            .remove_dispatching_thread_queued_turn(thread_id, turn_id)
+            .await
+        {
+            Ok(true) | Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(
+                    "failed to clear queued dispatch claim for thread {thread_id}: {err}"
+                );
+            }
+        }
+    }
+
+    async fn drain_thread_queue_if_idle(&self, thread_id: ThreadId) {
+        if self.require_enabled().await.is_err() {
+            return;
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
+            return;
+        };
+        if matches!(thread.agent_status().await, AgentStatus::Running) {
+            return;
+        }
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        {
+            let thread_state = thread_state.lock().await;
+            if thread_state.active_turn_snapshot().is_some()
+                || !matches!(
+                    thread_state.pending_turn_starts,
+                    crate::thread_state::PendingTurnStarts::None
+                )
+            {
+                return;
+            }
+        }
+        let record = match state_db
+            .thread_queue()
+            .claim_head_thread_queued_turn(thread_id)
+            .await
+        {
+            Ok(Some(record)) => record,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!("failed to claim queued turn for thread {thread_id}: {err}");
+                return;
+            }
+        };
+        self.emit_thread_queue_changed(thread_id).await;
+        let submission =
+            match serde_json::from_slice::<TurnSubmission>(record.turn_submission_jsonb.as_slice())
+            {
+                Ok(submission) => submission,
+                Err(err) => {
+                    self.fail_dispatch(
+                        thread_id,
+                        record.queued_turn_id.as_str(),
+                        turn_error(format!("queued turn payload could not be read: {err}")),
+                    )
+                    .await;
+                    return;
+                }
+            };
+        match self
+            .turn_processor
+            .queued_turn_start(thread_id, submission)
+            .await
+        {
+            Ok(response) => {
+                let turn_id = response.turn.id;
+                match state_db
+                    .thread_queue()
+                    .set_dispatching_thread_queued_turn_turn_id(
+                        record.queued_turn_id.as_str(),
+                        turn_id.as_str(),
+                    )
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::warn!(
+                            "queued turn {} lost its dispatch claim before turn {turn_id} was recorded",
+                            record.queued_turn_id
+                        );
+                        return;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to record dispatch turn {turn_id} for queued turn {}: {err}",
+                            record.queued_turn_id
+                        );
+                        return;
+                    }
+                }
+                let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+                let should_complete_dispatch = {
+                    let thread_state = thread_state.lock().await;
+                    thread_state
+                        .active_turn_snapshot()
+                        .is_some_and(|turn| turn.id == turn_id)
+                        || thread_state.last_terminal_turn_id.as_deref() == Some(turn_id.as_str())
+                };
+                if should_complete_dispatch {
+                    self.complete_dispatch_after_turn_started(thread_id, turn_id.as_str())
+                        .await;
+                }
+            }
+            Err(err) => {
+                self.fail_dispatch(
+                    thread_id,
+                    record.queued_turn_id.as_str(),
+                    turn_error(format!(
+                        "queued turn could not start: {message}",
+                        message = err.message
+                    )),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn fail_dispatch(&self, thread_id: ThreadId, queued_turn_id: &str, error: TurnError) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let failure_json = match serde_json::to_vec(&error) {
+            Ok(failure_json) => failure_json,
+            Err(err) => {
+                tracing::warn!("failed to serialize queued turn failure: {err}");
+                return;
+            }
+        };
+        match state_db
+            .thread_queue()
+            .mark_thread_queued_turn_failed(queued_turn_id, failure_json.as_slice())
+            .await
+        {
+            Ok(true) => self.emit_thread_queue_changed(thread_id).await,
+            Ok(false) => tracing::warn!(
+                "queued turn {queued_turn_id} could not be marked failed because its dispatch claim disappeared"
+            ),
+            Err(err) => tracing::warn!("failed to mark queued turn {queued_turn_id} failed: {err}"),
+        }
     }
 
     async fn emit_thread_queue_changed(&self, thread_id: ThreadId) {
