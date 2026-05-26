@@ -24,13 +24,11 @@ use crate::protocol::HttpRequestParams;
 use crate::protocol::INITIALIZE_METHOD;
 use crate::protocol::INITIALIZED_METHOD;
 use crate::protocol::InitializeParams;
-use crate::protocol::RUNTIME_INSTALL_METHOD;
 use crate::protocol::ReadParams;
 use crate::protocol::TerminateParams;
 use crate::protocol::WriteParams;
 use crate::rpc::RpcRouter;
 use crate::server::ExecServerHandler;
-use codex_app_server_protocol::RuntimeInstallParams;
 
 pub(crate) fn build_router() -> RpcRouter<ExecServerHandler> {
     let mut router = RpcRouter::new();
@@ -114,12 +112,6 @@ pub(crate) fn build_router() -> RpcRouter<ExecServerHandler> {
         FS_COPY_METHOD,
         |handler: Arc<ExecServerHandler>, params: FsCopyParams| async move {
             handler.fs_copy(params).await
-        },
-    );
-    router.request(
-        RUNTIME_INSTALL_METHOD,
-        |handler: Arc<ExecServerHandler>, params: RuntimeInstallParams| async move {
-            handler.runtime_install(params).await
         },
     );
     router
