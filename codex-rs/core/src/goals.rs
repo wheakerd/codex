@@ -15,6 +15,9 @@ use crate::state::TurnState;
 use crate::tasks::RegularTask;
 use crate::tools::handlers::goal_spec::UPDATE_GOAL_TOOL_NAME;
 use anyhow::Context;
+use codex_analytics::CodexGoalEvent;
+use codex_analytics::GoalEventKind;
+use codex_analytics::GoalStatus;
 use codex_features::Feature;
 use codex_otel::GOAL_BLOCKED_METRIC;
 use codex_otel::GOAL_BUDGET_LIMITED_METRIC;
@@ -163,7 +166,9 @@ pub(crate) enum GoalRuntimeEvent<'a> {
     ExternalSet {
         external_set: ExternalGoalSet,
     },
-    ExternalClear,
+    ExternalClear {
+        goal: codex_state::ThreadGoal,
+    },
     ThreadResumed,
 }
 
@@ -325,7 +330,49 @@ impl GoalWallClockAccountingSnapshot {
     }
 }
 
+fn analytics_goal_status(status: codex_state::ThreadGoalStatus) -> GoalStatus {
+    match status {
+        codex_state::ThreadGoalStatus::Active => GoalStatus::Active,
+        codex_state::ThreadGoalStatus::Paused => GoalStatus::Paused,
+        codex_state::ThreadGoalStatus::Blocked => GoalStatus::Blocked,
+        codex_state::ThreadGoalStatus::UsageLimited => GoalStatus::UsageLimited,
+        codex_state::ThreadGoalStatus::BudgetLimited => GoalStatus::BudgetLimited,
+        codex_state::ThreadGoalStatus::Complete => GoalStatus::Complete,
+    }
+}
+
 impl Session {
+    fn track_goal_analytics_event(
+        &self,
+        goal: &codex_state::ThreadGoal,
+        turn_id: Option<String>,
+        event_kind: GoalEventKind,
+    ) {
+        self.services
+            .analytics_events_client
+            .track_goal_event(CodexGoalEvent {
+                thread_id: self.conversation_id.to_string(),
+                turn_id,
+                goal_id: goal.goal_id.clone(),
+                event_kind,
+                goal_status: analytics_goal_status(goal.status),
+                has_token_budget: goal.token_budget.is_some(),
+                tokens_used: goal.tokens_used,
+                time_used_seconds: goal.time_used_seconds,
+            });
+    }
+
+    fn track_goal_status_change(
+        &self,
+        goal: &codex_state::ThreadGoal,
+        previous_status: Option<codex_state::ThreadGoalStatus>,
+        turn_id: Option<String>,
+    ) {
+        if previous_status.is_some_and(|status| status != goal.status) {
+            self.track_goal_analytics_event(goal, turn_id, GoalEventKind::StatusChanged);
+        }
+    }
+
     /// Applies runtime policy for a goal lifecycle event.
     ///
     /// Goal data methods validate and persist state; this dispatcher owns the
@@ -407,7 +454,8 @@ impl Session {
                 self.apply_external_thread_goal_status(external_set).await;
                 Ok(())
             }),
-            GoalRuntimeEvent::ExternalClear => Box::pin(async move {
+            GoalRuntimeEvent::ExternalClear { goal } => Box::pin(async move {
+                self.track_goal_analytics_event(&goal, None, GoalEventKind::Cleared);
                 self.clear_stopped_thread_goal_runtime_state().await;
                 Ok(())
             }),
@@ -546,10 +594,19 @@ impl Session {
         };
         if replacing_goal {
             self.emit_goal_created_metric();
+            self.track_goal_analytics_event(
+                &goal,
+                Some(turn_context.sub_id.clone()),
+                GoalEventKind::Created,
+            );
         }
         self.emit_goal_resumed_metric_if_status_changed(previous_status_for_goal, goal_status);
         self.emit_goal_terminal_metrics_if_status_changed(previous_status_for_goal, &goal);
-        let goal = protocol_goal_from_state(goal);
+        self.track_goal_status_change(
+            &goal,
+            previous_status_for_goal,
+            Some(turn_context.sub_id.clone()),
+        );
         *self.goal_runtime.budget_limit_reported_goal_id.lock().await = None;
         let newly_active_goal = goal_status == codex_state::ThreadGoalStatus::Active
             && (replacing_goal
@@ -566,6 +623,7 @@ impl Session {
         } else if goal_status != codex_state::ThreadGoalStatus::Active {
             self.clear_active_goal_accounting(turn_context).await;
         }
+        let goal = protocol_goal_from_state(goal);
         self.send_event(
             turn_context,
             EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
@@ -626,7 +684,11 @@ impl Session {
         .await;
         let goal_id = goal.goal_id.clone();
         self.emit_goal_created_metric();
-        let goal = protocol_goal_from_state(goal);
+        self.track_goal_analytics_event(
+            &goal,
+            Some(turn_context.sub_id.clone()),
+            GoalEventKind::Created,
+        );
         *self.goal_runtime.budget_limit_reported_goal_id.lock().await = None;
 
         let current_token_usage = self.total_token_usage().await.unwrap_or_default();
@@ -637,6 +699,7 @@ impl Session {
         )
         .await;
 
+        let goal = protocol_goal_from_state(goal);
         self.send_event(
             turn_context,
             EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
@@ -663,6 +726,7 @@ impl Session {
             .is_some_and(|previous_goal| previous_goal.goal_id != goal.goal_id);
         if previous_goal.is_none() || replaced_existing_goal {
             self.emit_goal_created_metric();
+            self.track_goal_analytics_event(&goal, None, GoalEventKind::Created);
         }
         let objective_changed = previous_goal
             .as_ref()
@@ -672,8 +736,9 @@ impl Session {
             .and_then(|previous_goal| (!replaced_existing_goal).then_some(previous_goal.status));
         self.emit_goal_resumed_metric_if_status_changed(previous_status, goal.status);
         self.emit_goal_terminal_metrics_if_status_changed(previous_status, &goal);
+        self.track_goal_status_change(&goal, previous_status, None);
         let goal_for_steering = objective_changed.then(|| protocol_goal_from_state(goal.clone()));
-        let goal_id = goal.goal_id;
+        let goal_id = goal.goal_id.clone();
         let status = goal.status;
         match status {
             codex_state::ThreadGoalStatus::Active => {
@@ -1053,6 +1118,12 @@ impl Session {
             }
             codex_state::GoalAccountingOutcome::Unchanged(_) => return Ok(()),
         };
+        self.track_goal_analytics_event(
+            &goal,
+            Some(turn_context.sub_id.clone()),
+            GoalEventKind::UsageAccounted,
+        );
+        self.track_goal_status_change(&goal, previous_status, Some(turn_context.sub_id.clone()));
         let should_steer_budget_limit =
             matches!(budget_limit_steering, BudgetLimitSteering::Allowed)
                 && goal.status == codex_state::ThreadGoalStatus::BudgetLimited
@@ -1203,6 +1274,7 @@ impl Session {
             return Ok(());
         };
         self.emit_goal_terminal_metrics_if_status_changed(previous_status, &goal);
+        self.track_goal_status_change(&goal, previous_status, Some(turn_context.sub_id.clone()));
         let goal = protocol_goal_from_state(goal);
         *self.goal_runtime.budget_limit_reported_goal_id.lock().await = None;
         self.clear_active_goal_accounting(turn_context).await;

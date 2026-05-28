@@ -275,6 +275,38 @@ pub struct CodexCompactionEvent {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalEventKind {
+    Created,
+    UsageAccounted,
+    StatusChanged,
+    Cleared,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
+}
+
+#[derive(Clone)]
+pub struct CodexGoalEvent {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub goal_id: String,
+    pub event_kind: GoalEventKind,
+    pub goal_status: GoalStatus,
+    pub has_token_budget: bool,
+    pub tokens_used: i64,
+    pub time_used_seconds: i64,
+}
+
 #[allow(dead_code)]
 pub(crate) enum AnalyticsFact {
     Initialize {
@@ -326,6 +358,7 @@ pub(crate) enum AnalyticsFact {
 pub(crate) enum CustomAnalyticsFact {
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
+    Goal(Box<CodexGoalEvent>),
     GuardianReview(Box<GuardianReviewEventParams>),
     TurnResolvedConfig(Box<TurnResolvedConfigFact>),
     TurnTokenUsage(Box<TurnTokenUsageFact>),

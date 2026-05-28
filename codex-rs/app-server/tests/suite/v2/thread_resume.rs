@@ -95,9 +95,11 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::analytics::assert_basic_thread_initialized_event;
+use super::analytics::captured_goal_events;
 use super::analytics::mount_analytics_capture;
 use super::analytics::thread_initialized_event;
 use super::analytics::wait_for_analytics_payload;
+use super::analytics::wait_for_goal_event;
 
 #[cfg(windows)]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
@@ -1298,6 +1300,183 @@ async fn thread_goal_clear_deletes_goal_and_notifies() -> Result<()> {
     .await??;
     let clear_again: ThreadGoalClearResponse = to_response(clear_again_resp)?;
     assert!(!clear_again.cleared);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_events_track_creation_accounted_usage_status_and_external_clear() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![responses::sse(vec![
+        responses::ev_response_created("goal-continuation"),
+        responses::ev_completed_with_tokens("goal-continuation", /*total_tokens*/ 200),
+    ])])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_chatgpt_base_url(codex_home.path(), &server.uri(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        config.replace("personality = true\n", "personality = true\ngoals = true\n"),
+    )?;
+    mount_analytics_capture(&server, codex_home.path()).await?;
+    let thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = McpProcess::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let _resume: ThreadResumeResponse = to_response(resume_resp)?;
+
+    let paused_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread_id,
+                "objective": "do not serialize this objective",
+                "status": "paused",
+                "tokenBudget": 100,
+            })),
+        )
+        .await?;
+    let paused_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(paused_id)),
+    )
+    .await??;
+    let _paused: ThreadGoalSetResponse = to_response(paused_resp)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goal/updated"),
+    )
+    .await??;
+    let created = wait_for_goal_event(&server, DEFAULT_READ_TIMEOUT, "created", "paused").await?;
+    let goal_id = created["event_params"]["goal_id"]
+        .as_str()
+        .expect("created goal id");
+    assert_eq!(created["event_params"]["thread_id"], thread_id);
+    assert_eq!(created["event_params"]["turn_id"], serde_json::Value::Null);
+    assert_eq!(created["event_params"]["has_token_budget"], true);
+    assert_eq!(created["event_params"]["tokens_used"], 0);
+    assert_eq!(created["event_params"]["time_used_seconds"], 0);
+    assert!(created.get("objective").is_none());
+    assert!(created["event_params"].get("objective").is_none());
+    assert!(created["event_params"].get("token_budget").is_none());
+    let goal_events = captured_goal_events(&server).await?;
+    assert!(
+        goal_events.iter().all(|event| {
+            event["event_params"]["event_kind"] != "usage_accounted"
+                || event["event_params"]["goal_status"] != "paused"
+        }),
+        "persisting a paused goal must not record accounted execution"
+    );
+
+    let active_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread_id,
+                "status": "active",
+            })),
+        )
+        .await?;
+    let active_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(active_id)),
+    )
+    .await??;
+    let _active: ThreadGoalSetResponse = to_response(active_resp)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goal/updated"),
+    )
+    .await??;
+
+    let activated =
+        wait_for_goal_event(&server, DEFAULT_READ_TIMEOUT, "status_changed", "active").await?;
+    assert_eq!(activated["event_params"]["goal_id"], goal_id);
+    assert_eq!(
+        activated["event_params"]["turn_id"],
+        serde_json::Value::Null
+    );
+
+    let usage_accounted = wait_for_goal_event(
+        &server,
+        DEFAULT_READ_TIMEOUT,
+        "usage_accounted",
+        "budget_limited",
+    )
+    .await?;
+    assert_eq!(usage_accounted["event_params"]["goal_id"], goal_id);
+    assert!(
+        usage_accounted["event_params"]["turn_id"]
+            .as_str()
+            .is_some(),
+        "accounted turn usage must retain causal turn attribution"
+    );
+    assert_eq!(usage_accounted["event_params"]["has_token_budget"], true);
+    assert_eq!(usage_accounted["event_params"]["tokens_used"], 200);
+    assert!(
+        usage_accounted["event_params"]
+            .get("token_budget")
+            .is_none()
+    );
+
+    let budget_limited = wait_for_goal_event(
+        &server,
+        DEFAULT_READ_TIMEOUT,
+        "status_changed",
+        "budget_limited",
+    )
+    .await?;
+    assert_eq!(budget_limited["event_params"]["goal_id"], goal_id);
+    assert_eq!(
+        budget_limited["event_params"]["turn_id"],
+        usage_accounted["event_params"]["turn_id"]
+    );
+    assert_eq!(budget_limited["event_params"]["has_token_budget"], true);
+    assert_eq!(budget_limited["event_params"]["tokens_used"], 200);
+    assert!(budget_limited["event_params"].get("token_budget").is_none());
+
+    let clear_id = mcp
+        .send_raw_request(
+            "thread/goal/clear",
+            Some(json!({
+                "threadId": thread_id,
+            })),
+        )
+        .await?;
+    let clear_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(clear_id)),
+    )
+    .await??;
+    let clear: ThreadGoalClearResponse = to_response(clear_resp)?;
+    assert!(clear.cleared);
+
+    let cleared =
+        wait_for_goal_event(&server, DEFAULT_READ_TIMEOUT, "cleared", "budget_limited").await?;
+    assert_eq!(cleared["event_params"]["goal_id"], goal_id);
+    assert_eq!(cleared["event_params"]["turn_id"], serde_json::Value::Null);
+    assert_eq!(cleared["event_params"]["has_token_budget"], true);
+    assert!(cleared["event_params"].get("objective").is_none());
+    assert!(cleared["event_params"].get("token_budget").is_none());
 
     Ok(())
 }
