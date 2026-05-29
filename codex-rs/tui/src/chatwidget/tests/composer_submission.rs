@@ -927,6 +927,41 @@ async fn empty_enter_during_task_does_not_queue() {
 }
 
 #[tokio::test]
+async fn app_server_queue_gate_routes_plain_follow_up_to_durable_queue() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::AppServerQueue, /*enabled*/ true);
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.queue_user_message("queued submission".into());
+
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    match op_rx.try_recv() {
+        Ok(Op::QueueTurn { submission }) => assert_eq!(
+            submission.input,
+            vec![UserInput::Text {
+                text: "queued submission".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected Op::QueueTurn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn app_server_queue_gate_keeps_shell_follow_up_local() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::AppServerQueue, /*enabled*/ true);
+    chat.thread_id = Some(ThreadId::new());
+    chat.bottom_pane.set_task_running(/*running*/ true);
+
+    chat.queue_user_message("!echo hello".into());
+
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn pending_steer_esc_does_not_steal_vim_insert_escape() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);

@@ -82,7 +82,14 @@ impl ChatWidget {
         user_message: UserMessage,
         action: QueuedInputAction,
     ) {
-        if !self.is_session_configured() || self.is_user_turn_pending_or_running() {
+        if self.is_session_configured()
+            && self.is_user_turn_pending_or_running()
+            && action == QueuedInputAction::Plain
+            && !user_message.text.starts_with('!')
+            && self.config.features.enabled(Feature::AppServerQueue)
+        {
+            self.submit_user_message_to_queue(user_message);
+        } else if !self.is_session_configured() || self.is_user_turn_pending_or_running() {
             self.input_queue
                 .queued_user_messages
                 .push_back(QueuedUserMessage::new(user_message, action));

@@ -9,6 +9,7 @@ use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
+use codex_app_server_protocol::TurnSubmission;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::ApprovalsReviewer;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -50,6 +51,9 @@ pub(crate) enum AppCommand {
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
+    },
+    QueueTurn {
+        submission: TurnSubmission,
     },
     OverrideTurnContext {
         cwd: Option<PathBuf>,
@@ -167,6 +171,10 @@ impl AppCommand {
             collaboration_mode,
             personality,
         }
+    }
+
+    pub(crate) fn queue_turn(submission: TurnSubmission) -> Self {
+        Self::QueueTurn { submission }
     }
 
     #[allow(clippy::too_many_arguments)]

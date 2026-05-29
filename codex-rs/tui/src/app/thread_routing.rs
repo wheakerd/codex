@@ -616,6 +616,12 @@ impl App {
                 }
                 Ok(true)
             }
+            AppCommand::QueueTurn { submission } => {
+                app_server
+                    .thread_queue_add(thread_id, submission.clone())
+                    .await?;
+                Ok(true)
+            }
             AppCommand::ListSkills { cwds, force_reload } => {
                 self.handle_skills_list_result(
                     app_server

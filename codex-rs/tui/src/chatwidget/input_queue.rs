@@ -5,6 +5,9 @@
 
 use std::collections::VecDeque;
 
+use codex_app_server_protocol::QueuedTurn;
+use codex_app_server_protocol::UserInput;
+
 use super::PendingSteer;
 use super::QueuedUserMessage;
 use super::UserMessage;
@@ -22,6 +25,8 @@ pub(super) struct PendingInputPreview {
 pub(super) struct InputQueueState {
     /// User inputs queued while a turn is in progress.
     pub(super) queued_user_messages: VecDeque<QueuedUserMessage>,
+    /// User inputs persisted by app-server while a turn is in progress.
+    pub(super) server_queued_messages: Vec<String>,
     /// History records for queued user messages. Slash commands such as `/goal`
     /// can render history that differs from the text submitted to core, so this
     /// stays in lockstep with `queued_user_messages`, with missing entries
@@ -51,6 +56,7 @@ impl InputQueueState {
 
     pub(super) fn clear(&mut self) {
         self.queued_user_messages.clear();
+        self.server_queued_messages.clear();
         self.queued_user_message_history_records.clear();
         self.user_turn_pending_start = false;
         self.rejected_steers_queue.clear();
@@ -61,15 +67,20 @@ impl InputQueueState {
 
     pub(super) fn preview(&self) -> PendingInputPreview {
         let queued_messages = self
-            .queued_user_messages
+            .server_queued_messages
             .iter()
-            .enumerate()
-            .map(|(idx, message)| {
-                user_message_preview_text(
-                    message,
-                    self.queued_user_message_history_records.get(idx),
-                )
-            })
+            .cloned()
+            .chain(
+                self.queued_user_messages
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, message)| {
+                        user_message_preview_text(
+                            message,
+                            self.queued_user_message_history_records.get(idx),
+                        )
+                    }),
+            )
             .collect();
         let pending_steers = self
             .pending_steers
@@ -93,6 +104,23 @@ impl InputQueueState {
             rejected_steers,
         }
     }
+
+    pub(super) fn set_server_queued_turns(&mut self, queued_turns: Vec<QueuedTurn>) {
+        self.server_queued_messages = queued_turns
+            .into_iter()
+            .map(|queued_turn| {
+                queued_turn
+                    .submission
+                    .input
+                    .into_iter()
+                    .find_map(|item| match item {
+                        UserInput::Text { text, .. } => Some(text),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "[queued input]".to_string())
+            })
+            .collect();
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +136,9 @@ mod tests {
             .queued_user_messages
             .push_back(UserMessage::from("queued").into());
         state
+            .server_queued_messages
+            .push("server queued".to_string());
+        state
             .rejected_steers_queue
             .push_back(UserMessage::from("rejected"));
         state.pending_steers.push_back(PendingSteer {
@@ -122,7 +153,7 @@ mod tests {
         assert_eq!(
             state.preview(),
             PendingInputPreview {
-                queued_messages: vec!["queued".to_string()],
+                queued_messages: vec!["server queued".to_string(), "queued".to_string()],
                 pending_steers: vec!["pending".to_string()],
                 rejected_steers: vec!["rejected".to_string()],
             }
@@ -136,6 +167,9 @@ mod tests {
             .queued_user_messages
             .push_back(UserMessage::from("queued").into());
         state
+            .server_queued_messages
+            .push("server queued".to_string());
+        state
             .rejected_steers_queue
             .push_back(UserMessage::from("rejected"));
         state.user_turn_pending_start = true;
@@ -144,6 +178,7 @@ mod tests {
         state.clear();
 
         assert!(state.queued_user_messages.is_empty());
+        assert!(state.server_queued_messages.is_empty());
         assert!(state.queued_user_message_history_records.is_empty());
         assert!(!state.user_turn_pending_start);
         assert!(state.rejected_steers_queue.is_empty());
