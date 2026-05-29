@@ -1509,7 +1509,7 @@ async fn run_exec_server_command(
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
     let config = load_exec_server_config(root_config_overrides, strict_config).await?;
-    let _otel = init_exec_server_tracing(&config);
+    let (_otel, telemetry) = init_exec_server_tracing(&config);
     let exec_server_span = exec_server_root_span();
     if let Some(base_url) = cmd.remote {
         let environment_id = cmd
@@ -1528,6 +1528,7 @@ async fn run_exec_server_command(
         if let Some(name) = cmd.name {
             remote_config.name = name;
         }
+        let remote_config = remote_config.with_telemetry(telemetry);
         codex_exec_server::run_remote_environment(remote_config, runtime_paths)
             .instrument(exec_server_span)
             .await?;
@@ -1538,14 +1539,16 @@ async fn run_exec_server_command(
             .listen
             .as_deref()
             .unwrap_or(codex_exec_server::DEFAULT_LISTEN_URL);
-        codex_exec_server::run_main(listen_url, runtime_paths)
+        codex_exec_server::run_main_with_telemetry(listen_url, runtime_paths, telemetry)
             .instrument(exec_server_span)
             .await
             .map_err(anyhow::Error::from_boxed)
     }
 }
 
-fn init_exec_server_tracing(config: &codex_core::config::Config) -> impl Send + Sync {
+fn init_exec_server_tracing(
+    config: &codex_core::config::Config,
+) -> (impl Send + Sync, codex_exec_server::ExecServerTelemetry) {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(exec_server_stderr_env_filter());
@@ -1571,13 +1574,16 @@ fn init_exec_server_tracing(config: &codex_core::config::Config) -> impl Send + 
 
     let otel_logger_layer = otel.as_ref().and_then(|otel| otel.logger_layer());
     let otel_tracing_layer = otel.as_ref().and_then(|otel| otel.tracing_layer());
+    let telemetry = codex_exec_server::ExecServerTelemetry::new(
+        otel.as_ref().and_then(|otel| otel.metrics()).cloned(),
+    );
     let _ = tracing_subscriber::registry()
         .with(fmt_layer)
         .with(otel_tracing_layer)
         .with(otel_logger_layer)
         .try_init();
     tracing::callsite::rebuild_interest_cache();
-    otel
+    (otel, telemetry)
 }
 
 fn exec_server_root_span() -> tracing::Span {

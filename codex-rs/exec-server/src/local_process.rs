@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -45,6 +46,7 @@ use crate::rpc::RpcServerOutboundMessage;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
 use crate::rpc::invalid_request;
+use crate::telemetry::ExecServerTelemetry;
 
 const RETAINED_OUTPUT_BYTES_PER_PROCESS: usize = 1024 * 1024;
 const NOTIFICATION_CHANNEL_CAPACITY: usize = 256;
@@ -74,6 +76,8 @@ struct RunningProcess {
     output_notify: Arc<Notify>,
     open_streams: usize,
     closed: bool,
+    started_at: Instant,
+    metrics_finished: bool,
 }
 
 enum ProcessEntry {
@@ -84,6 +88,7 @@ enum ProcessEntry {
 struct Inner {
     notifications: std::sync::RwLock<Option<RpcNotificationSender>>,
     processes: Mutex<HashMap<ProcessId, ProcessEntry>>,
+    telemetry: ExecServerTelemetry,
 }
 
 #[derive(Clone)]
@@ -103,16 +108,23 @@ impl Default for LocalProcess {
         let (outgoing_tx, mut outgoing_rx) =
             mpsc::channel::<RpcServerOutboundMessage>(NOTIFICATION_CHANNEL_CAPACITY);
         tokio::spawn(async move { while outgoing_rx.recv().await.is_some() {} });
-        Self::new(RpcNotificationSender::new(outgoing_tx))
+        Self::new(
+            RpcNotificationSender::new(outgoing_tx),
+            ExecServerTelemetry::default(),
+        )
     }
 }
 
 impl LocalProcess {
-    pub(crate) fn new(notifications: RpcNotificationSender) -> Self {
+    pub(crate) fn new(
+        notifications: RpcNotificationSender,
+        telemetry: ExecServerTelemetry,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 notifications: std::sync::RwLock::new(Some(notifications)),
                 processes: Mutex::new(HashMap::new()),
+                telemetry,
             }),
         }
     }
@@ -129,6 +141,11 @@ impl LocalProcess {
                 .collect::<Vec<_>>()
         };
         for process in remaining {
+            if !process.metrics_finished {
+                self.inner
+                    .telemetry
+                    .process_finished("terminated", process.started_at.elapsed());
+            }
             process.session.terminate();
         }
     }
@@ -226,9 +243,12 @@ impl LocalProcess {
                     output_notify: Arc::clone(&output_notify),
                     open_streams: 2,
                     closed: false,
+                    started_at: Instant::now(),
+                    metrics_finished: false,
                 })),
             );
         }
+        self.inner.telemetry.process_started();
 
         tokio::spawn(stream_output(
             process_id.clone(),
@@ -601,7 +621,7 @@ async fn watch_exit(
     output_notify: Arc<Notify>,
 ) {
     let exit_code = exit_rx.await.unwrap_or(-1);
-    let notification = {
+    let (notification, process_duration) = {
         let mut processes = inner.processes.lock().await;
         if let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id) {
             let seq = process.next_seq;
@@ -611,15 +631,25 @@ async fn watch_exit(
             process
                 .events
                 .publish(ExecProcessEvent::Exited { seq, exit_code });
-            Some(ExecExitedNotification {
-                process_id: process_id.clone(),
-                seq,
-                exit_code,
-            })
+            process.metrics_finished = true;
+            (
+                Some(ExecExitedNotification {
+                    process_id: process_id.clone(),
+                    seq,
+                    exit_code,
+                }),
+                Some(process.started_at.elapsed()),
+            )
         } else {
-            None
+            (None, None)
         }
     };
+    if let Some(process_duration) = process_duration {
+        inner.telemetry.process_finished(
+            if exit_code == 0 { "success" } else { "error" },
+            process_duration,
+        );
+    }
     output_notify.notify_waiters();
     if let Some(notification) = notification
         && let Some(notifications) = notification_sender(&inner)
@@ -890,6 +920,8 @@ mod tests {
                 output_notify: Arc::clone(&output_notify),
                 open_streams: 2,
                 closed: false,
+                started_at: Instant::now(),
+                metrics_finished: false,
             })),
         );
         assert!(previous.is_none());

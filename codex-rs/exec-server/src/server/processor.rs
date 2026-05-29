@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -16,26 +17,39 @@ use crate::rpc::method_not_found;
 use crate::server::ExecServerHandler;
 use crate::server::registry::build_router;
 use crate::server::session_registry::SessionRegistry;
+use crate::telemetry::ConnectionTransport;
+use crate::telemetry::ExecServerTelemetry;
 
 #[derive(Clone)]
 pub(crate) struct ConnectionProcessor {
     session_registry: Arc<SessionRegistry>,
     runtime_paths: ExecServerRuntimePaths,
+    telemetry: ExecServerTelemetry,
 }
 
 impl ConnectionProcessor {
-    pub(crate) fn new(runtime_paths: ExecServerRuntimePaths) -> Self {
+    pub(crate) fn new(
+        runtime_paths: ExecServerRuntimePaths,
+        telemetry: ExecServerTelemetry,
+    ) -> Self {
         Self {
-            session_registry: SessionRegistry::new(),
+            session_registry: SessionRegistry::new(telemetry.clone()),
             runtime_paths,
+            telemetry,
         }
     }
 
-    pub(crate) async fn run_connection(&self, connection: JsonRpcConnection) {
+    pub(crate) async fn run_connection(
+        &self,
+        connection: JsonRpcConnection,
+        transport: ConnectionTransport,
+    ) {
         run_connection(
             connection,
             Arc::clone(&self.session_registry),
             self.runtime_paths.clone(),
+            self.telemetry.clone(),
+            transport,
         )
         .await;
     }
@@ -45,7 +59,10 @@ async fn run_connection(
     connection: JsonRpcConnection,
     session_registry: Arc<SessionRegistry>,
     runtime_paths: ExecServerRuntimePaths,
+    telemetry: ExecServerTelemetry,
+    transport: ConnectionTransport,
 ) {
+    let _connection_metrics = telemetry.connection_started(transport);
     let router = Arc::new(build_router());
     let JsonRpcConnection {
         outgoing_tx: json_outgoing_tx,
@@ -100,31 +117,50 @@ async fn run_connection(
             }
             JsonRpcConnectionEvent::Message(message) => match message {
                 codex_app_server_protocol::JSONRPCMessage::Request(request) => {
+                    let operation = request_operation(request.method.as_str());
+                    let request_started_at = Instant::now();
                     if let Some(route) = router.request_route(request.method.as_str()) {
                         let message = tokio::select! {
                             message = route(Arc::clone(&handler), request) => message,
                             _ = disconnected_rx.changed() => {
+                                telemetry.request_completed(
+                                    operation,
+                                    "disconnected",
+                                    request_started_at.elapsed(),
+                                );
                                 debug!("exec-server transport disconnected while handling request");
                                 break;
                             }
                         };
+                        telemetry.request_completed(
+                            operation,
+                            request_result(&message),
+                            request_started_at.elapsed(),
+                        );
                         if let Some(message) = message
                             && outgoing_tx.send(message).await.is_err()
                         {
                             break;
                         }
-                    } else if outgoing_tx
-                        .send(RpcServerOutboundMessage::Error {
-                            request_id: request.id,
-                            error: method_not_found(format!(
-                                "exec-server stub does not implement `{}` yet",
-                                request.method
-                            )),
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
+                    } else {
+                        telemetry.request_completed(
+                            operation,
+                            "error",
+                            request_started_at.elapsed(),
+                        );
+                        if outgoing_tx
+                            .send(RpcServerOutboundMessage::Error {
+                                request_id: request.id,
+                                error: method_not_found(format!(
+                                    "exec-server stub does not implement `{}` yet",
+                                    request.method
+                                )),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 codex_app_server_protocol::JSONRPCMessage::Notification(notification) => {
@@ -184,6 +220,35 @@ async fn run_connection(
     let _ = outbound_task.await;
 }
 
+fn request_operation(method: &str) -> &'static str {
+    match method {
+        crate::protocol::INITIALIZE_METHOD => "initialize",
+        crate::protocol::EXEC_METHOD
+        | crate::protocol::EXEC_READ_METHOD
+        | crate::protocol::EXEC_WRITE_METHOD
+        | crate::protocol::EXEC_TERMINATE_METHOD => "process",
+        crate::protocol::FS_READ_FILE_METHOD
+        | crate::protocol::FS_WRITE_FILE_METHOD
+        | crate::protocol::FS_CREATE_DIRECTORY_METHOD
+        | crate::protocol::FS_GET_METADATA_METHOD
+        | crate::protocol::FS_READ_DIRECTORY_METHOD
+        | crate::protocol::FS_REMOVE_METHOD
+        | crate::protocol::FS_COPY_METHOD => "filesystem",
+        crate::protocol::HTTP_REQUEST_METHOD => "http",
+        _ => "unknown",
+    }
+}
+
+fn request_result(message: &Option<RpcServerOutboundMessage>) -> &'static str {
+    match message {
+        Some(RpcServerOutboundMessage::Error { .. }) => "error",
+        Some(
+            RpcServerOutboundMessage::Response { .. } | RpcServerOutboundMessage::Notification(_),
+        )
+        | None => "success",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -226,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn transport_disconnect_detaches_session_during_in_flight_read() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::new(crate::ExecServerTelemetry::default());
         let (mut first_writer, mut first_lines, first_task) =
             spawn_test_connection(Arc::clone(&registry), "first");
 
@@ -322,7 +387,13 @@ mod tests {
         let (server_writer, client_reader) = duplex(1 << 20);
         let connection =
             JsonRpcConnection::from_stdio(server_reader, server_writer, label.to_string());
-        let task = tokio::spawn(run_connection(connection, registry, test_runtime_paths()));
+        let task = tokio::spawn(run_connection(
+            connection,
+            registry,
+            test_runtime_paths(),
+            crate::ExecServerTelemetry::default(),
+            crate::telemetry::ConnectionTransport::Stdio,
+        ));
         (client_writer, BufReader::new(client_reader).lines(), task)
     }
 

@@ -186,6 +186,11 @@ fn otlp_http_exporter_sends_metrics_to_collector() -> Result<()> {
     ))?;
 
     metrics.counter("codex.turns", /*inc*/ 1, &[("source", "test")])?;
+    metrics.gauge(
+        "exec_server.connections.active",
+        /*value*/ 1,
+        &[("transport", "websocket")],
+    )?;
     metrics.shutdown()?;
 
     server.join().expect("server join");
@@ -218,6 +223,16 @@ fn otlp_http_exporter_sends_metrics_to_collector() -> Result<()> {
     assert!(
         body.contains("codex.turns"),
         "expected metric name not found; body prefix: {}",
+        &body.chars().take(2000).collect::<String>()
+    );
+    assert!(
+        body.contains("exec_server.connections.active"),
+        "expected exec-server gauge not found; body prefix: {}",
+        &body.chars().take(2000).collect::<String>()
+    );
+    assert!(
+        body.contains("websocket"),
+        "expected exec-server metric tag not found; body prefix: {}",
         &body.chars().take(2000).collect::<String>()
     );
 
