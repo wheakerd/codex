@@ -2842,7 +2842,10 @@
               "delete_char": null,
               "delete_to_line_end": null,
               "enter_insert": null,
+              "enter_visual": null,
+              "enter_visual_line": null,
               "insert_line_start": null,
+              "jump_bottom": null,
               "move_down": null,
               "move_left": null,
               "move_line_end": null,
@@ -2855,10 +2858,14 @@
               "open_line_above": null,
               "open_line_below": null,
               "paste_after": null,
+              "redo": null,
+              "repeat_last_edit": null,
               "start_change_operator": null,
               "start_delete_operator": null,
+              "start_goto_sequence": null,
               "start_yank_operator": null,
               "substitute_char": null,
+              "undo": null,
               "yank_line": null
             },
             "vim_operator": {
@@ -3533,7 +3540,10 @@
             "delete_char": null,
             "delete_to_line_end": null,
             "enter_insert": null,
+            "enter_visual": null,
+            "enter_visual_line": null,
             "insert_line_start": null,
+            "jump_bottom": null,
             "move_down": null,
             "move_left": null,
             "move_line_end": null,
@@ -3546,10 +3556,14 @@
             "open_line_above": null,
             "open_line_below": null,
             "paste_after": null,
+            "redo": null,
+            "repeat_last_edit": null,
             "start_change_operator": null,
             "start_delete_operator": null,
+            "start_goto_sequence": null,
             "start_yank_operator": null,
             "substitute_char": null,
+            "undo": null,
             "yank_line": null
           }
         },
@@ -3849,6 +3863,22 @@
           ],
           "description": "Enter insert mode at cursor (`i`)."
         },
+        "enter_visual": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Enter visual mode (`v`)."
+        },
+        "enter_visual_line": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Enter linewise visual mode (`V`)."
+        },
         "insert_line_start": {
           "allOf": [
             {
@@ -3856,6 +3886,14 @@
             }
           ],
           "description": "Enter insert mode at first non-blank of line (`I`)."
+        },
+        "jump_bottom": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Move cursor to the end of the text (`G`)."
         },
         "move_down": {
           "allOf": [
@@ -3953,6 +3991,22 @@
           ],
           "description": "Paste after cursor (`p`)."
         },
+        "redo": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Redo the previous undone edit (`Ctrl-R`)."
+        },
+        "repeat_last_edit": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Repeat the previous Vim normal-mode edit (`.`)."
+        },
         "start_change_operator": {
           "allOf": [
             {
@@ -3968,6 +4022,14 @@
             }
           ],
           "description": "Begin delete operator; next key selects motion (`d`)."
+        },
+        "start_goto_sequence": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Begin a goto sequence (`g`, then `g` jumps to the top)."
         },
         "start_yank_operator": {
           "allOf": [
@@ -3985,6 +4047,14 @@
           ],
           "description": "Delete character under cursor and enter insert mode (`s`)."
         },
+        "undo": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Undo the previous text edit (`u`)."
+        },
         "yank_line": {
           "allOf": [
             {
@@ -3998,7 +4068,7 @@
     },
     "TuiVimOperatorKeymap": {
       "additionalProperties": false,
-      "description": "Vim operator-pending keybindings for modal editing inside text areas.\n\nThis context is active only while waiting for a motion after `d` or `y`. Repeating the operator key (`dd`, `yy`) targets the entire line. Pressing `Esc` cancels the pending operator and returns to normal mode without modifying text.",
+      "description": "Vim operator-pending keybindings for modal editing inside text areas.\n\nThis context is active only while waiting for a motion after `d`, `y`, or `c`. Repeating delete/yank (`dd`, `yy`) targets the entire line; change uses the normal-mode change key (`cc`). Pressing `Esc` cancels the pending operator and returns to normal mode without modifying text.",
       "properties": {
         "cancel": {
           "allOf": [

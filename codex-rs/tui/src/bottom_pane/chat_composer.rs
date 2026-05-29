@@ -1080,6 +1080,8 @@ impl ChatComposer {
             .vim_mode_label()
             .map(|label| match label {
                 "Normal" => "Vim: Normal".magenta(),
+                "Visual" => "Vim: Visual".cyan(),
+                "Visual Line" => "Vim: Visual Line".cyan(),
                 "Insert" => "Vim: Insert".green(),
                 _ => unreachable!(),
             })
@@ -5395,6 +5397,34 @@ mod tests {
         );
         assert_eq!(composer.footer.mode, FooterMode::ComposerEmpty);
         assert!(!composer.footer.esc_backtrack_hint);
+    }
+
+    #[test]
+    fn vim_visual_mode_indicator_renders_without_panic() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_vim_enabled(/*enabled*/ true);
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+
+        assert!(matches!(result, InputResult::None));
+        assert!(needs_redraw);
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Visual".cyan())
+        );
     }
 
     #[test]
