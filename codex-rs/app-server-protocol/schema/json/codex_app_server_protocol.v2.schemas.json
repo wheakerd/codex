@@ -15506,6 +15506,12 @@
             }
           ]
         },
+        "runtimeWorkspaceRoots": {
+          "items": {
+            "$ref": "#/definitions/AbsolutePathBuf"
+          },
+          "type": "array"
+        },
         "sandboxPolicy": {
           "$ref": "#/definitions/SandboxPolicy"
         },
@@ -15533,6 +15539,7 @@
         "cwd",
         "model",
         "modelProvider",
+        "runtimeWorkspaceRoots",
         "sandboxPolicy"
       ],
       "type": "object"

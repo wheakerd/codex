@@ -25,10 +25,12 @@ use codex_app_server_protocol::TurnSubmission;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::test_support::all_model_presets;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -92,6 +94,42 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
                     == Some(service_tier_id.as_str())
         }),
         "future turn did not use updated model/service tier: {request_bodies:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_resolves_runtime_workspace_roots_against_effective_cwd()
+-> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+    let cwd = codex_home.path().join("workspace");
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            cwd: Some(cwd.clone()),
+            runtime_workspace_roots: Some(vec![PathBuf::from("nested"), PathBuf::from("nested")]),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_id, thread.id);
+    assert_eq!(
+        updated.thread_settings.cwd,
+        AbsolutePathBuf::try_from(cwd.clone())?
+    );
+    assert_eq!(
+        updated.thread_settings.runtime_workspace_roots,
+        vec![AbsolutePathBuf::try_from(cwd.join("nested"))?]
     );
     Ok(())
 }

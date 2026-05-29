@@ -5138,9 +5138,19 @@ async fn interrupt_without_active_turn_is_treated_as_handled() {
     .await;
 }
 
-#[tokio::test]
-async fn override_turn_context_sends_thread_settings_update() {
-    Box::pin(async {
+#[test]
+fn override_turn_context_sends_thread_settings_update() {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    runtime.block_on(Box::pin(async {
         let mut app = make_test_app().await;
         let mut app_server =
             crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
@@ -5271,8 +5281,7 @@ async fn override_turn_context_sends_thread_settings_update() {
                 .id,
             codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE
         );
-    })
-    .await;
+    }));
 }
 
 #[tokio::test]
@@ -5366,6 +5375,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
         thread_id: inactive_thread_id.to_string(),
         thread_settings: ThreadSettings {
             cwd: test_absolute_path("/tmp/thread-settings"),
+            runtime_workspace_roots: vec![test_absolute_path("/tmp/thread-settings")],
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
             sandbox_policy: codex_app_server_protocol::SandboxPolicy::ReadOnly {
@@ -5402,6 +5412,10 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
         .expect("inactive session should remain cached");
     assert_eq!(cached_session.model, "gpt-test");
     assert_eq!(cached_session.personality, Some(Personality::Pragmatic));
+    assert_eq!(
+        cached_session.runtime_workspace_roots,
+        vec![test_absolute_path("/tmp/thread-settings")]
+    );
     assert_eq!(
         cached_session.collaboration_mode.as_deref(),
         Some(&collaboration_mode)
