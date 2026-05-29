@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
+use tracing::Instrument;
 use tracing::debug;
 use tracing::warn;
 
@@ -117,37 +118,37 @@ async fn run_connection(
             }
             JsonRpcConnectionEvent::Message(message) => match message {
                 codex_app_server_protocol::JSONRPCMessage::Request(request) => {
-                    let operation = request_operation(request.method.as_str());
+                    let method = request_method(request.method.as_str());
+                    let request_span = request_span(method);
                     let request_started_at = Instant::now();
                     if let Some(route) = router.request_route(request.method.as_str()) {
                         let message = tokio::select! {
-                            message = route(Arc::clone(&handler), request) => message,
+                            message = route(Arc::clone(&handler), request).instrument(request_span.clone()) => message,
                             _ = disconnected_rx.changed() => {
+                                request_span.record("result", "disconnected");
                                 telemetry.request_completed(
-                                    operation,
+                                    method,
                                     "disconnected",
                                     request_started_at.elapsed(),
                                 );
+                                drop(request_span);
                                 debug!("exec-server transport disconnected while handling request");
                                 break;
                             }
                         };
-                        telemetry.request_completed(
-                            operation,
-                            request_result(&message),
-                            request_started_at.elapsed(),
-                        );
+                        let result = request_result(&message);
+                        request_span.record("result", result);
+                        telemetry.request_completed(method, result, request_started_at.elapsed());
+                        drop(request_span);
                         if let Some(message) = message
                             && outgoing_tx.send(message).await.is_err()
                         {
                             break;
                         }
                     } else {
-                        telemetry.request_completed(
-                            operation,
-                            "error",
-                            request_started_at.elapsed(),
-                        );
+                        request_span.record("result", "error");
+                        telemetry.request_completed(method, "error", request_started_at.elapsed());
+                        drop(request_span);
                         if outgoing_tx
                             .send(RpcServerOutboundMessage::Error {
                                 request_id: request.id,
@@ -220,23 +221,33 @@ async fn run_connection(
     let _ = outbound_task.await;
 }
 
-fn request_operation(method: &str) -> &'static str {
+fn request_method(method: &str) -> &'static str {
     match method {
-        crate::protocol::INITIALIZE_METHOD => "initialize",
-        crate::protocol::EXEC_METHOD
-        | crate::protocol::EXEC_READ_METHOD
-        | crate::protocol::EXEC_WRITE_METHOD
-        | crate::protocol::EXEC_TERMINATE_METHOD => "process",
-        crate::protocol::FS_READ_FILE_METHOD
-        | crate::protocol::FS_WRITE_FILE_METHOD
-        | crate::protocol::FS_CREATE_DIRECTORY_METHOD
-        | crate::protocol::FS_GET_METADATA_METHOD
-        | crate::protocol::FS_READ_DIRECTORY_METHOD
-        | crate::protocol::FS_REMOVE_METHOD
-        | crate::protocol::FS_COPY_METHOD => "filesystem",
-        crate::protocol::HTTP_REQUEST_METHOD => "http",
+        crate::protocol::INITIALIZE_METHOD => crate::protocol::INITIALIZE_METHOD,
+        crate::protocol::EXEC_METHOD => crate::protocol::EXEC_METHOD,
+        crate::protocol::EXEC_READ_METHOD => crate::protocol::EXEC_READ_METHOD,
+        crate::protocol::EXEC_WRITE_METHOD => crate::protocol::EXEC_WRITE_METHOD,
+        crate::protocol::EXEC_TERMINATE_METHOD => crate::protocol::EXEC_TERMINATE_METHOD,
+        crate::protocol::FS_READ_FILE_METHOD => crate::protocol::FS_READ_FILE_METHOD,
+        crate::protocol::FS_WRITE_FILE_METHOD => crate::protocol::FS_WRITE_FILE_METHOD,
+        crate::protocol::FS_CREATE_DIRECTORY_METHOD => crate::protocol::FS_CREATE_DIRECTORY_METHOD,
+        crate::protocol::FS_GET_METADATA_METHOD => crate::protocol::FS_GET_METADATA_METHOD,
+        crate::protocol::FS_READ_DIRECTORY_METHOD => crate::protocol::FS_READ_DIRECTORY_METHOD,
+        crate::protocol::FS_REMOVE_METHOD => crate::protocol::FS_REMOVE_METHOD,
+        crate::protocol::FS_COPY_METHOD => crate::protocol::FS_COPY_METHOD,
+        crate::protocol::HTTP_REQUEST_METHOD => crate::protocol::HTTP_REQUEST_METHOD,
         _ => "unknown",
     }
+}
+
+fn request_span(method: &'static str) -> tracing::Span {
+    tracing::info_span!(
+        "codex.exec_server.request",
+        otel.kind = "server",
+        otel.name = method,
+        method,
+        result = tracing::field::Empty,
+    )
 }
 
 fn request_result(message: &Option<RpcServerOutboundMessage>) -> &'static str {
@@ -260,6 +271,7 @@ mod tests {
     use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::JSONRPCResponse;
     use codex_app_server_protocol::RequestId;
+    use pretty_assertions::assert_eq;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
     use tokio::io::AsyncBufReadExt;
@@ -271,6 +283,7 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
 
+    use super::request_method;
     use super::run_connection;
     use crate::ExecServerRuntimePaths;
     use crate::ProcessId;
@@ -288,6 +301,12 @@ mod tests {
     use crate::protocol::TerminateParams;
     use crate::protocol::TerminateResponse;
     use crate::server::session_registry::SessionRegistry;
+
+    #[test]
+    fn request_method_uses_bounded_protocol_method_names() {
+        assert_eq!(request_method(EXEC_TERMINATE_METHOD), EXEC_TERMINATE_METHOD);
+        assert_eq!(request_method("custom/method"), "unknown");
+    }
 
     #[tokio::test]
     async fn transport_disconnect_detaches_session_during_in_flight_read() {

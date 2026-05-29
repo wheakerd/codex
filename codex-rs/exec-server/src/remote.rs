@@ -1,10 +1,12 @@
 use std::time::Duration;
+use std::time::Instant;
 
 use codex_api::SharedAuthProvider;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
+use tracing::Instrument;
 use tracing::info;
 use tracing::warn;
 
@@ -170,9 +172,20 @@ pub async fn run_remote_environment(
     let mut connection_attempt = 0_u32;
 
     loop {
-        let response = match client.register_environment(&config.environment_id).await {
+        let registration_started_at = Instant::now();
+        let registration_span = remote_registration_span();
+        let response = match client
+            .register_environment(&config.environment_id)
+            .instrument(registration_span.clone())
+            .await
+        {
             Ok(response) => response,
             Err(err) => {
+                registration_span.record("result", "error");
+                config
+                    .telemetry
+                    .remote_registration_completed("error", registration_started_at.elapsed());
+                drop(registration_span);
                 warn!(error = %err, "failed to register remote exec-server environment");
                 emit_remote_otel_event!(
                     WARN,
@@ -182,6 +195,11 @@ pub async fn run_remote_environment(
                 return Err(err);
             }
         };
+        registration_span.record("result", "success");
+        config
+            .telemetry
+            .remote_registration_completed("success", registration_started_at.elapsed());
+        drop(registration_span);
         eprintln!("codex exec-server remote environment registered");
         info!("codex exec-server remote environment registered");
         emit_remote_otel_event!(
@@ -190,9 +208,21 @@ pub async fn run_remote_environment(
             "codex exec-server remote environment registered"
         );
 
-        match connect_async(response.url.as_str()).await {
+        let websocket_connect_started_at = Instant::now();
+        let websocket_connect_span = remote_websocket_connect_span(connection_attempt + 1);
+        match connect_async(response.url.as_str())
+            .instrument(websocket_connect_span.clone())
+            .await
+        {
             Ok((websocket, _)) => {
                 connection_attempt += 1;
+                websocket_connect_span.record("result", "success");
+                config.telemetry.remote_websocket_connect_completed(
+                    "success",
+                    websocket_connect_started_at.elapsed(),
+                );
+                drop(websocket_connect_span);
+                let remote_websocket = config.telemetry.remote_websocket_connected();
                 info!(
                     attempt = connection_attempt,
                     "connected remote exec-server websocket"
@@ -205,7 +235,8 @@ pub async fn run_remote_environment(
                 );
                 backoff = Duration::from_secs(1);
                 run_multiplexed_environment(websocket, processor.clone()).await;
-                config.telemetry.relay_reconnect("disconnected");
+                drop(remote_websocket);
+                config.telemetry.remote_websocket_reconnect("disconnected");
                 warn!(
                     attempt = connection_attempt,
                     "remote exec-server websocket disconnected; retrying"
@@ -219,6 +250,12 @@ pub async fn run_remote_environment(
             }
             Err(err) => {
                 connection_attempt += 1;
+                websocket_connect_span.record("result", "error");
+                config.telemetry.remote_websocket_connect_completed(
+                    "error",
+                    websocket_connect_started_at.elapsed(),
+                );
+                drop(websocket_connect_span);
                 warn!(
                     attempt = connection_attempt,
                     error = %err,
@@ -230,7 +267,9 @@ pub async fn run_remote_environment(
                     attempt = connection_attempt,
                     "failed to connect remote exec-server websocket"
                 );
-                config.telemetry.relay_reconnect("connect_failed");
+                config
+                    .telemetry
+                    .remote_websocket_reconnect("connect_failed");
             }
         }
 
@@ -249,6 +288,25 @@ pub async fn run_remote_environment(
         sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(30));
     }
+}
+
+fn remote_registration_span() -> tracing::Span {
+    tracing::info_span!(
+        "codex.exec_server.remote.register",
+        otel.kind = "client",
+        otel.name = "codex.exec_server.remote.register",
+        result = tracing::field::Empty,
+    )
+}
+
+fn remote_websocket_connect_span(attempt: u32) -> tracing::Span {
+    tracing::info_span!(
+        "codex.exec_server.remote.websocket.connect",
+        otel.kind = "client",
+        otel.name = "codex.exec_server.remote.websocket.connect",
+        attempt,
+        result = tracing::field::Empty,
+    )
 }
 
 fn normalize_environment_id(environment_id: String) -> Result<String, ExecServerError> {
@@ -492,6 +550,47 @@ mod tests {
                 span.name.as_ref() == "codex.exec_server.remote_environment_registered"
             }),
             "expected finished remote OTEL lifecycle span, got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn remote_operation_spans_finish_immediately() {
+        let span_exporter = InMemorySpanExporter::default();
+        let tracer_provider = SdkTracerProvider::builder()
+            .with_simple_exporter(span_exporter.clone())
+            .build();
+        let tracer = tracer_provider.tracer("exec-server-test");
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_filter(filter_fn(codex_otel::OtelProvider::trace_export_filter)),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            let registration_span = remote_registration_span();
+            registration_span.in_scope(|| {});
+            registration_span.record("result", "success");
+            drop(registration_span);
+            let websocket_span = remote_websocket_connect_span(2);
+            websocket_span.in_scope(|| {});
+            websocket_span.record("result", "success");
+            drop(websocket_span);
+        });
+
+        tracer_provider.force_flush().expect("flush traces");
+        let spans = span_exporter.get_finished_spans().expect("span export");
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.name.as_ref() == "codex.exec_server.remote.register"),
+            "expected finished remote registration span, got {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| { span.name.as_ref() == "codex.exec_server.remote.websocket.connect" }),
+            "expected finished remote websocket connect span, got {spans:?}"
         );
     }
 }
