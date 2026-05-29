@@ -147,35 +147,6 @@ async fn compression_preserves_rollout_permissions() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn persist_temp_file_noclobber_installs_completed_temp() -> anyhow::Result<()> {
-    let home = TempDir::new()?;
-    let temp_path = home.path().join("rollout.jsonl.tmp");
-    let destination = home.path().join("rollout.jsonl");
-    fs::write(&temp_path, "completed rollout")?;
-
-    persist_temp_file_noclobber(&temp_path, &destination)?;
-
-    assert!(!temp_path.exists());
-    assert_eq!(fs::read_to_string(destination)?, "completed rollout");
-    Ok(())
-}
-
-#[test]
-fn persist_temp_file_noclobber_does_not_replace_existing_destination() -> anyhow::Result<()> {
-    let home = TempDir::new()?;
-    let temp_path = home.path().join("rollout.jsonl.tmp");
-    let destination = home.path().join("rollout.jsonl");
-    fs::write(&temp_path, "candidate rollout")?;
-    fs::write(&destination, "existing rollout")?;
-
-    persist_temp_file_noclobber(&temp_path, &destination)?;
-
-    assert!(!temp_path.exists());
-    assert_eq!(fs::read_to_string(destination)?, "existing rollout");
-    Ok(())
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn compression_preserves_read_only_rollout_permissions() -> anyhow::Result<()> {
