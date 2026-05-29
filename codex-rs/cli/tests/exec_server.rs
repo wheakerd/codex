@@ -2,7 +2,6 @@ use std::io::Read as _;
 use std::io::Write as _;
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::Stdio;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -113,6 +112,8 @@ fn remote_exec_server_preserves_websocket_error_in_stderr() -> Result<()> {
 
     let registry = TestRegistry::start(&failed_websocket_url)?;
     let codex_home = TempDir::new()?;
+    let stderr_path = codex_home.path().join("remote.stderr");
+    let stderr_file = std::fs::File::create(&stderr_path)?;
     let mut cmd = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
     cmd.env("CODEX_HOME", codex_home.path())
         .env("CODEX_API_KEY", "test-key")
@@ -124,16 +125,16 @@ fn remote_exec_server_preserves_websocket_error_in_stderr() -> Result<()> {
             "--environment-id",
             "env-test",
         ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr_file);
 
     let mut child = cmd.spawn()?;
     thread::sleep(Duration::from_secs(2));
     let _ = child.kill();
-    let output = child.wait_with_output()?;
+    child.wait()?;
     registry.finish()?;
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = std::fs::read_to_string(stderr_path)?;
     assert!(
         stderr.contains("failed to connect remote exec-server websocket"),
         "{stderr}"
