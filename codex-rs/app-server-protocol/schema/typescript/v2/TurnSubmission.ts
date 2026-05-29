@@ -8,4 +8,4 @@ export type TurnSubmission = {input: Array<UserInput>, /**
  * Optional JSON Schema used to constrain the final assistant message for
  * this turn.
  */
-outputSchema: JsonValue | null};
+outputSchema?: JsonValue | null};

@@ -13,6 +13,7 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
+use codex_app_server_protocol::ThreadSettingsOverrides;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
@@ -21,6 +22,7 @@ use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSubmission;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -79,11 +81,17 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run sleep".to_string(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(working_directory.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run sleep".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(working_directory.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -161,10 +169,13 @@ async fn turn_interrupt_rejects_completed_turn() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "say done".to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "say done".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -256,12 +267,18 @@ async fn turn_interrupt_resolves_pending_command_approval_request() -> Result<()
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run python".to_string(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(working_directory),
-            approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run python".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(working_directory),
+                approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;

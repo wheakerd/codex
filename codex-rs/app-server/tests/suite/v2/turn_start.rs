@@ -42,6 +42,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::TextElement;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSettingsOverrides;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -52,6 +53,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSubmission;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::WarningNotification;
 use codex_config::config_toml::ConfigToml;
@@ -142,10 +144,13 @@ async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>>
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::LocalImage {
-                path: image_path,
-                detail,
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::LocalImage {
+                    path: image_path,
+                    detail,
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -237,7 +242,10 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: Vec::new(),
+            submission: TurnSubmission {
+                input: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -338,17 +346,20 @@ async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "inspect tab".to_string(),
-                text_elements: Vec::new(),
-            }],
-            additional_context: Some(HashMap::from([(
-                "custom_source".to_string(),
-                AdditionalContextEntry {
-                    value: "source value".to_string(),
-                    kind: AdditionalContextKind::Untrusted,
-                },
-            )])),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "inspect tab".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                additional_context: Some(HashMap::from([(
+                    "custom_source".to_string(),
+                    AdditionalContextEntry {
+                        value: "source value".to_string(),
+                        kind: AdditionalContextKind::Untrusted,
+                    },
+                )])),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -424,10 +435,13 @@ async fn turn_start_sends_originator_header() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -497,10 +511,13 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: Some("client-message-1".to_string()),
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: text_elements.clone(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: text_elements.clone(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -604,10 +621,13 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -699,11 +719,17 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
-            service_tier: Some(Some(service_tier_id.clone())),
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            thread_settings: ThreadSettingsOverrides {
+                service_tier: Some(Some(service_tier_id.clone())),
+                ..Default::default()
+            },
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -771,10 +797,13 @@ async fn thread_start_omits_empty_instruction_overrides_from_model_request() -> 
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -851,10 +880,13 @@ async fn turn_start_tracks_turn_event_analytics() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Image {
-                url: "https://example.com/a.png".to_string(),
-                detail: None,
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Image {
+                    url: "https://example.com/a.png".to_string(),
+                    detail: None,
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -940,16 +972,19 @@ async fn turn_start_accepts_text_at_limit_with_mention_item() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![
-                V2UserInput::Text {
-                    text: "x".repeat(MAX_USER_INPUT_TEXT_CHARS),
-                    text_elements: Vec::new(),
-                },
-                V2UserInput::Mention {
-                    name: "Demo App".to_string(),
-                    path: "app://demo-app".to_string(),
-                },
-            ],
+            submission: TurnSubmission {
+                input: vec![
+                    V2UserInput::Text {
+                        text: "x".repeat(MAX_USER_INPUT_TEXT_CHARS),
+                        text_elements: Vec::new(),
+                    },
+                    V2UserInput::Mention {
+                        name: "Demo App".to_string(),
+                        path: "app://demo-app".to_string(),
+                    },
+                ],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1004,16 +1039,19 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![
-                V2UserInput::Text {
-                    text: first,
-                    text_elements: Vec::new(),
-                },
-                V2UserInput::Text {
-                    text: second,
-                    text_elements: Vec::new(),
-                },
-            ],
+            submission: TurnSubmission {
+                input: vec![
+                    V2UserInput::Text {
+                        text: first,
+                        text_elements: Vec::new(),
+                    },
+                    V2UserInput::Text {
+                        text: second,
+                        text_elements: Vec::new(),
+                    },
+                ],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1079,11 +1117,17 @@ async fn turn_start_rejects_invalid_permission_selection_before_starting_turn() 
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            permissions: Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                permissions: Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1152,14 +1196,17 @@ async fn turn_start_rejects_unknown_environment_before_starting_turn() -> Result
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            environments: Some(vec![TurnEnvironmentParams {
-                environment_id: "missing".to_string(),
-                cwd: codex_home.path().to_path_buf().try_into()?,
-            }]),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Some(vec![TurnEnvironmentParams {
+                    environment_id: "missing".to_string(),
+                    cwd: codex_home.path().to_path_buf().try_into()?,
+                }]),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1226,10 +1273,13 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1279,11 +1329,17 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Second".to_string(),
-                text_elements: Vec::new(),
-            }],
-            model: Some("mock-model-override".to_string()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Second".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                model: Some("mock-model-override".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1378,15 +1434,21 @@ async fn turn_start_accepts_collaboration_mode_override_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            model: Some("mock-model-override".to_string()),
-            effort: Some(ReasoningEffort::Low),
-            summary: Some(ReasoningSummary::Auto),
-            output_schema: None,
-            collaboration_mode: Some(collaboration_mode),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                output_schema: None,
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                model: Some("mock-model-override".to_string()),
+                effort: Some(ReasoningEffort::Low),
+                summary: Some(ReasoningSummary::Auto),
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1468,15 +1530,21 @@ async fn turn_start_uses_thread_feature_overrides_for_request_user_input_tool_de
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            model: Some("mock-model-override".to_string()),
-            effort: Some(ReasoningEffort::Low),
-            summary: Some(ReasoningSummary::Auto),
-            output_schema: None,
-            collaboration_mode: Some(collaboration_mode),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                output_schema: None,
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                model: Some("mock-model-override".to_string()),
+                effort: Some(ReasoningEffort::Low),
+                summary: Some(ReasoningSummary::Auto),
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1540,11 +1608,17 @@ async fn turn_start_accepts_personality_override_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            personality: Some(Personality::Friendly),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                personality: Some(Personality::Friendly),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1622,11 +1696,17 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            personality: None,
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                personality: None,
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1647,11 +1727,17 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello again".to_string(),
-                text_elements: Vec::new(),
-            }],
-            personality: Some(Personality::Friendly),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello again".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                personality: Some(Personality::Friendly),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1750,11 +1836,17 @@ async fn turn_start_uses_migrated_pragmatic_personality_without_override_v2() ->
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            personality: None,
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                personality: None,
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1871,10 +1963,13 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run python".to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run python".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -1936,15 +2031,21 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run python again".to_string(),
-                text_elements: Vec::new(),
-            }],
-            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
-            sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
-            model: Some("mock-model".to_string()),
-            effort: Some(ReasoningEffort::Medium),
-            summary: Some(ReasoningSummary::Auto),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run python again".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
+                model: Some("mock-model".to_string()),
+                effort: Some(ReasoningEffort::Medium),
+                summary: Some(ReasoningSummary::Auto),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2014,11 +2115,17 @@ async fn turn_start_exec_approval_decline_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run python".to_string(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run python".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2167,33 +2274,39 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
     // first turn with workspace-write sandbox and first_cwd
     let first_turn = mcp
         .send_turn_start_request(TurnStartParams {
-            environments: None,
+            submission: TurnSubmission {
+                environments: None,
+                input: vec![V2UserInput::Text {
+                    text: "first turn".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                responsesapi_client_metadata: None,
+                additional_context: None,
+                output_schema: None,
+                ..Default::default()
+            },
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "first turn".to_string(),
-                text_elements: Vec::new(),
-            }],
-            responsesapi_client_metadata: None,
-            additional_context: None,
-            cwd: Some(first_cwd.clone()),
-            runtime_workspace_roots: None,
-            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
-            approvals_reviewer: None,
-            sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
-                writable_roots: vec![first_cwd.try_into()?],
-                network_access: false,
-                exclude_tmpdir_env_var: true,
-                exclude_slash_tmp: true,
-            }),
-            permissions: None,
-            model: Some("mock-model".to_string()),
-            effort: Some(ReasoningEffort::Medium),
-            summary: Some(ReasoningSummary::Auto),
-            service_tier: None,
-            personality: None,
-            output_schema: None,
-            collaboration_mode: None,
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(first_cwd.clone()),
+                runtime_workspace_roots: None,
+                approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                approvals_reviewer: None,
+                sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
+                    writable_roots: vec![first_cwd.try_into()?],
+                    network_access: false,
+                    exclude_tmpdir_env_var: true,
+                    exclude_slash_tmp: true,
+                }),
+                permissions: None,
+                model: Some("mock-model".to_string()),
+                effort: Some(ReasoningEffort::Medium),
+                summary: Some(ReasoningSummary::Auto),
+                service_tier: None,
+                personality: None,
+                collaboration_mode: None,
+                ..Default::default()
+            },
         })
         .await?;
     timeout(
@@ -2211,28 +2324,34 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
     // second turn with workspace-write and second_cwd, ensure exec begins in second_cwd
     let second_turn = mcp
         .send_turn_start_request(TurnStartParams {
-            environments: None,
+            submission: TurnSubmission {
+                environments: None,
+                input: vec![V2UserInput::Text {
+                    text: "second turn".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                responsesapi_client_metadata: None,
+                additional_context: None,
+                output_schema: None,
+                ..Default::default()
+            },
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "second turn".to_string(),
-                text_elements: Vec::new(),
-            }],
-            responsesapi_client_metadata: None,
-            additional_context: None,
-            cwd: Some(second_cwd.clone()),
-            runtime_workspace_roots: None,
-            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
-            approvals_reviewer: None,
-            sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
-            permissions: None,
-            model: Some("mock-model".to_string()),
-            effort: Some(ReasoningEffort::Medium),
-            summary: Some(ReasoningSummary::Auto),
-            service_tier: None,
-            personality: None,
-            output_schema: None,
-            collaboration_mode: None,
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(second_cwd.clone()),
+                runtime_workspace_roots: None,
+                approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                approvals_reviewer: None,
+                sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
+                permissions: None,
+                model: Some("mock-model".to_string()),
+                effort: Some(ReasoningEffort::Medium),
+                summary: Some(ReasoningSummary::Auto),
+                service_tier: None,
+                personality: None,
+                collaboration_mode: None,
+                ..Default::default()
+            },
         })
         .await?;
     timeout(
@@ -2357,12 +2476,18 @@ stream_max_retries = 0
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "select dev profile".to_string(),
-                text_elements: Vec::new(),
-            }],
-            runtime_workspace_roots: Some(vec![old_root]),
-            permissions: Some("dev".to_string()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "select dev profile".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                runtime_workspace_roots: Some(vec![old_root]),
+                permissions: Some("dev".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2381,11 +2506,17 @@ stream_max_retries = 0
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "write in new root".to_string(),
-                text_elements: Vec::new(),
-            }],
-            runtime_workspace_roots: Some(vec![new_root]),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "write in new root".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                runtime_workspace_roots: Some(vec![new_root]),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2514,13 +2645,19 @@ async fn run_environment_selection_case(
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: format!("run {}", case.name),
-                text_elements: Vec::new(),
-            }],
-            environments: environment_params(case.turn, workspace)?,
-            cwd: Some(workspace.to_path_buf()),
-            model: Some("mock-model".to_string()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: format!("run {}", case.name),
+                    text_elements: Vec::new(),
+                }],
+                environments: environment_params(case.turn, workspace)?,
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.to_path_buf()),
+                model: Some("mock-model".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2630,11 +2767,17 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "apply patch".into(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "apply patch".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2821,11 +2964,17 @@ async fn turn_start_does_not_stream_apply_patch_change_updates_without_feature_v
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "apply patch".into(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "apply patch".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -2959,11 +3108,17 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "apply patch".into(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "apply patch".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3090,10 +3245,13 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: PARENT_PROMPT.to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: PARENT_PROMPT.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3310,10 +3468,13 @@ config_file = "./custom-role.toml"
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: PARENT_PROMPT.to_string(),
-                text_elements: Vec::new(),
-            }],
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: PARENT_PROMPT.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3456,11 +3617,17 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "apply patch 1".into(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "apply patch 1".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3529,11 +3696,17 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "apply patch 2".into(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "apply patch 2".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3628,11 +3801,17 @@ async fn turn_start_file_change_approval_decline_v2() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "apply patch".into(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(workspace.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "apply patch".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3774,11 +3953,17 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run a command".to_string(),
-                text_elements: Vec::new(),
-            }],
-            sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run a command".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -3907,12 +4092,18 @@ async fn turn_start_with_elevated_override_does_not_persist_project_trust() -> R
     let turn_request = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
-            cwd: Some(workspace.path().to_path_buf()),
-            sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(workspace.path().to_path_buf()),
+                sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
+                ..Default::default()
+            },
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "Hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;

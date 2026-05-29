@@ -18,12 +18,14 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSettingsOverrides;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
+use codex_app_server_protocol::TurnSubmission;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use serde_json::Value;
@@ -156,11 +158,17 @@ async fn turn_steer_rejects_oversized_text_input() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run sleep".to_string(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(working_directory.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run sleep".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(working_directory.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -270,11 +278,17 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run sleep".to_string(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(working_directory.clone()),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run sleep".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(working_directory.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;
@@ -407,11 +421,17 @@ async fn turn_steer_rejects_context_only_input_without_merging_context() -> Resu
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "run sleep".to_string(),
-                text_elements: Vec::new(),
-            }],
-            cwd: Some(working_directory),
+            submission: TurnSubmission {
+                input: vec![V2UserInput::Text {
+                    text: "run sleep".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            thread_settings: ThreadSettingsOverrides {
+                cwd: Some(working_directory),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await?;

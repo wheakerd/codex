@@ -774,7 +774,10 @@ fn text_submission(text: &str) -> TurnSubmission {
 fn text_turn(thread_id: &str, text: &str) -> TurnStartParams {
     TurnStartParams {
         thread_id: thread_id.to_string(),
-        input: text_submission(text).input,
+        submission: TurnSubmission {
+            input: text_submission(text).input,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
