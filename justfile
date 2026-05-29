@@ -55,7 +55,8 @@ test *args:
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
     just bench-smoke
 
-# Run the Python tests for repository automation scripts.
+# Run from the repository root so scripts that resolve paths from `cwd` see
+# the same layout they use in GitHub Actions.
 [no-cd]
 test-scripts:
     python3 -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
