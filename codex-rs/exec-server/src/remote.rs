@@ -17,6 +17,104 @@ use crate::server::ConnectionProcessor;
 
 const ERROR_BODY_PREVIEW_BYTES: usize = 4096;
 
+macro_rules! remote_event {
+    ($log:ident, $level:ident, $environment_id:expr, $event_name:literal, $message:literal) => {{
+        $log!(environment_id = %$environment_id, $message);
+        tracing::event!(
+            target: "codex_otel.log_only",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            $message
+        );
+        tracing::event!(
+            target: "codex_otel.trace_safe",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            $message
+        );
+    }};
+    ($log:ident, $level:ident, $environment_id:expr, $attempt:expr, $event_name:literal, $message:literal) => {{
+        $log!(environment_id = %$environment_id, attempt = $attempt, $message);
+        tracing::event!(
+            target: "codex_otel.log_only",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            attempt = $attempt,
+            $message
+        );
+        tracing::event!(
+            target: "codex_otel.trace_safe",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            attempt = $attempt,
+            $message
+        );
+    }};
+    ($log:ident, $level:ident, $environment_id:expr, with_error $error:expr, $event_name:literal, $message:literal) => {{
+        $log!(environment_id = %$environment_id, error = %$error, $message);
+        tracing::event!(
+            target: "codex_otel.log_only",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            error = %$error,
+            $message
+        );
+        tracing::event!(
+            target: "codex_otel.trace_safe",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            $message
+        );
+    }};
+    ($log:ident, $level:ident, $environment_id:expr, $attempt:expr, with_error $error:expr, $event_name:literal, $message:literal) => {{
+        $log!(environment_id = %$environment_id, attempt = $attempt, error = %$error, $message);
+        tracing::event!(
+            target: "codex_otel.log_only",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            attempt = $attempt,
+            error = %$error,
+            $message
+        );
+        tracing::event!(
+            target: "codex_otel.trace_safe",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            attempt = $attempt,
+            $message
+        );
+    }};
+    ($log:ident, $level:ident, $environment_id:expr, $attempt:expr, with_backoff_ms $backoff_ms:expr, $event_name:literal, $message:literal) => {{
+        $log!(environment_id = %$environment_id, attempt = $attempt, backoff_ms = $backoff_ms, $message);
+        tracing::event!(
+            target: "codex_otel.log_only",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            attempt = $attempt,
+            backoff_ms = $backoff_ms,
+            $message
+        );
+        tracing::event!(
+            target: "codex_otel.trace_safe",
+            tracing::Level::$level,
+            event.name = $event_name,
+            environment_id = %$environment_id,
+            attempt = $attempt,
+            backoff_ms = $backoff_ms,
+            $message
+        );
+    }};
+}
+
 #[derive(Clone)]
 struct EnvironmentRegistryClient {
     base_url: String,
@@ -141,24 +239,12 @@ pub async fn run_remote_environment(
         let response = match client.register_environment(&config.environment_id).await {
             Ok(response) => response,
             Err(err) => {
-                warn!(
-                    environment_id = %config.environment_id,
-                    error = %err,
-                    "failed to register remote exec-server environment"
-                );
-                tracing::event!(
-                    target: "codex_otel.log_only",
-                    tracing::Level::WARN,
-                    event.name = "codex.exec_server.remote_environment_registration_failed",
-                    environment_id = %config.environment_id,
-                    error = %err,
-                    "failed to register remote exec-server environment"
-                );
-                tracing::event!(
-                    target: "codex_otel.trace_safe",
-                    tracing::Level::WARN,
-                    event.name = "codex.exec_server.remote_environment_registration_failed",
-                    environment_id = %config.environment_id,
+                remote_event!(
+                    warn,
+                    WARN,
+                    config.environment_id,
+                    with_error err,
+                    "codex.exec_server.remote_environment_registration_failed",
                     "failed to register remote exec-server environment"
                 );
                 return Err(err);
@@ -168,124 +254,58 @@ pub async fn run_remote_environment(
             "codex exec-server remote environment registered with environment_id {}",
             response.environment_id
         );
-        info!(
-            environment_id = %response.environment_id,
-            "codex exec-server remote environment registered"
-        );
-        tracing::event!(
-            target: "codex_otel.log_only",
-            tracing::Level::INFO,
-            event.name = "codex.exec_server.remote_environment_registered",
-            environment_id = %response.environment_id,
-            "codex exec-server remote environment registered"
-        );
-        tracing::event!(
-            target: "codex_otel.trace_safe",
-            tracing::Level::INFO,
-            event.name = "codex.exec_server.remote_environment_registered",
-            environment_id = %response.environment_id,
+        remote_event!(
+            info,
+            INFO,
+            response.environment_id,
+            "codex.exec_server.remote_environment_registered",
             "codex exec-server remote environment registered"
         );
 
         match connect_async(response.url.as_str()).await {
             Ok((websocket, _)) => {
                 connection_attempt += 1;
-                info!(
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
-                    "connected remote exec-server websocket"
-                );
-                tracing::event!(
-                    target: "codex_otel.log_only",
-                    tracing::Level::INFO,
-                    event.name = "codex.exec_server.remote_websocket_connected",
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
-                    "connected remote exec-server websocket"
-                );
-                tracing::event!(
-                    target: "codex_otel.trace_safe",
-                    tracing::Level::INFO,
-                    event.name = "codex.exec_server.remote_websocket_connected",
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
+                remote_event!(
+                    info,
+                    INFO,
+                    response.environment_id,
+                    connection_attempt,
+                    "codex.exec_server.remote_websocket_connected",
                     "connected remote exec-server websocket"
                 );
                 backoff = Duration::from_secs(1);
                 run_multiplexed_environment(websocket, processor.clone()).await;
-                warn!(
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
-                    "remote exec-server websocket disconnected; retrying"
-                );
-                tracing::event!(
-                    target: "codex_otel.log_only",
-                    tracing::Level::WARN,
-                    event.name = "codex.exec_server.remote_websocket_disconnected",
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
-                    "remote exec-server websocket disconnected; retrying"
-                );
-                tracing::event!(
-                    target: "codex_otel.trace_safe",
-                    tracing::Level::WARN,
-                    event.name = "codex.exec_server.remote_websocket_disconnected",
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
+                remote_event!(
+                    warn,
+                    WARN,
+                    response.environment_id,
+                    connection_attempt,
+                    "codex.exec_server.remote_websocket_disconnected",
                     "remote exec-server websocket disconnected; retrying"
                 );
             }
             Err(err) => {
                 connection_attempt += 1;
-                warn!(
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
-                    error = %err,
-                    "failed to connect remote exec-server websocket"
-                );
-                tracing::event!(
-                    target: "codex_otel.log_only",
-                    tracing::Level::WARN,
-                    event.name = "codex.exec_server.remote_websocket_connect_failed",
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
-                    error = %err,
-                    "failed to connect remote exec-server websocket"
-                );
-                tracing::event!(
-                    target: "codex_otel.trace_safe",
-                    tracing::Level::WARN,
-                    event.name = "codex.exec_server.remote_websocket_connect_failed",
-                    environment_id = %response.environment_id,
-                    attempt = connection_attempt,
+                remote_event!(
+                    warn,
+                    WARN,
+                    response.environment_id,
+                    connection_attempt,
+                    with_error err,
+                    "codex.exec_server.remote_websocket_connect_failed",
                     "failed to connect remote exec-server websocket"
                 );
             }
         }
 
         let backoff_ms = backoff.as_millis();
-        info!(
-            environment_id = %response.environment_id,
-            attempt = connection_attempt,
-            backoff_ms,
-            "retrying remote exec-server websocket"
-        );
-        tracing::event!(
-            target: "codex_otel.log_only",
-            tracing::Level::INFO,
-            event.name = "codex.exec_server.remote_websocket_retrying",
-            environment_id = %response.environment_id,
-            attempt = connection_attempt,
-            backoff_ms,
-            "retrying remote exec-server websocket"
-        );
-        tracing::event!(
-            target: "codex_otel.trace_safe",
-            tracing::Level::INFO,
-            event.name = "codex.exec_server.remote_websocket_retrying",
-            environment_id = %response.environment_id,
-            attempt = connection_attempt,
-            backoff_ms,
+        remote_event!(
+            info,
+            INFO,
+            response.environment_id,
+            connection_attempt,
+            with_backoff_ms backoff_ms,
+            "codex.exec_server.remote_websocket_retrying",
             "retrying remote exec-server websocket"
         );
         sleep(backoff).await;
