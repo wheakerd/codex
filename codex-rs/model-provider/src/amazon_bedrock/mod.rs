@@ -27,7 +27,7 @@ use auth::resolve_provider_auth;
 pub(crate) use catalog::static_model_catalog;
 pub use mantle::is_supported_region;
 use mantle::runtime_base_url;
-pub use provider_auth::AmazonBedrockAuth;
+use provider_auth::StoredAmazonBedrockAuth;
 pub use provider_auth::delete_amazon_bedrock_auth;
 pub use provider_auth::load_amazon_bedrock_auth;
 pub use provider_auth::save_amazon_bedrock_auth;
@@ -37,7 +37,7 @@ pub use provider_auth::save_amazon_bedrock_auth;
 pub(crate) struct AmazonBedrockModelProvider {
     pub(crate) info: ModelProviderInfo,
     pub(crate) aws: ModelProviderAwsAuthInfo,
-    codex_home: Option<PathBuf>,
+    stored_auth: StoredAmazonBedrockAuth,
 }
 
 impl AmazonBedrockModelProvider {
@@ -49,22 +49,16 @@ impl AmazonBedrockModelProvider {
                 profile: None,
                 region: None,
             });
+        let stored_auth = match codex_home.as_deref() {
+            Some(codex_home) => load_amazon_bedrock_auth(codex_home)
+                .map_err(|err| format!("failed to load Amazon Bedrock auth: {err}")),
+            None => Ok(None),
+        };
         Self {
             info: provider_info,
             aws,
-            codex_home,
+            stored_auth,
         }
-    }
-
-    fn stored_auth(&self) -> Result<Option<AmazonBedrockAuth>> {
-        let Some(codex_home) = self.codex_home.as_deref() else {
-            return Ok(None);
-        };
-        load_amazon_bedrock_auth(codex_home).map_err(|err| {
-            codex_protocol::error::CodexErr::Fatal(format!(
-                "failed to load Amazon Bedrock auth: {err}"
-            ))
-        })
     }
 }
 
@@ -103,21 +97,16 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
     async fn api_provider(&self) -> Result<Provider> {
         let mut api_provider_info = self.info.clone();
-        let stored_auth = self.stored_auth()?;
-        api_provider_info.base_url = Some(runtime_base_url(stored_auth.as_ref(), &self.aws).await?);
+        api_provider_info.base_url = Some(runtime_base_url(&self.stored_auth, &self.aws).await?);
         api_provider_info.to_api_provider(/*auth_mode*/ None)
     }
 
     async fn runtime_base_url(&self) -> Result<Option<String>> {
-        let stored_auth = self.stored_auth()?;
-        Ok(Some(
-            runtime_base_url(stored_auth.as_ref(), &self.aws).await?,
-        ))
+        Ok(Some(runtime_base_url(&self.stored_auth, &self.aws).await?))
     }
 
     async fn api_auth(&self) -> Result<SharedAuthProvider> {
-        let stored_auth = self.stored_auth()?;
-        resolve_provider_auth(stored_auth.as_ref(), &self.aws).await
+        resolve_provider_auth(&self.stored_auth, &self.aws).await
     }
 
     fn models_manager(
@@ -134,6 +123,9 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -182,5 +174,36 @@ mod tests {
             provider.approval_review_preferred_model(),
             AMAZON_BEDROCK_GPT_5_4_MODEL_ID
         );
+    }
+
+    #[tokio::test]
+    async fn stored_auth_is_loaded_when_provider_is_created() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-bedrock-provider-auth-init-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&codex_home);
+        save_amazon_bedrock_auth(&codex_home, "bedrock-key", "eu-west-2").expect("save auth");
+
+        let provider = AmazonBedrockModelProvider::new(
+            ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
+            Some(codex_home.clone()),
+        );
+
+        delete_amazon_bedrock_auth(&codex_home).expect("delete auth");
+
+        assert_eq!(
+            provider
+                .runtime_base_url()
+                .await
+                .expect("runtime base URL should use initialized auth"),
+            Some("https://bedrock-mantle.eu-west-2.api.aws/openai/v1".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 }
