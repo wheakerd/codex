@@ -249,22 +249,16 @@ async fn logout_account_removes_auth_and_notifies() -> Result<()> {
 }
 
 #[tokio::test]
-async fn logout_account_removes_bedrock_model_provider_after_managed_auth_removed() -> Result<()> {
+async fn logout_account_removes_managed_bedrock_auth_without_changing_config() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_config_toml(
         codex_home.path(),
         CreateConfigTomlParams {
-            model_provider_id: Some("amazon-bedrock".to_string()),
-            extra_provider_config: Some(
-                r#"[model_providers.amazon-bedrock.aws]
-region = "us-west-2"
-"#
-                .to_string(),
-            ),
             ..Default::default()
         },
     )?;
     save_amazon_bedrock_auth(codex_home.path(), "bedrock-key", "us-west-2")?;
+    let config_before = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
 
     let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -287,18 +281,7 @@ region = "us-west-2"
         "managed Amazon Bedrock auth should be deleted"
     );
     let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
-    assert!(
-        !config.contains("model_provider = \"amazon-bedrock\""),
-        "active Bedrock model provider should be removed after managed Bedrock logout"
-    );
-    assert!(
-        config.contains("[model_providers.amazon-bedrock.aws]"),
-        "Bedrock provider config should be preserved"
-    );
-    assert!(
-        config.contains("region = \"us-west-2\""),
-        "Bedrock region should be preserved"
-    );
+    assert_eq!(config, config_before);
     Ok(())
 }
 
@@ -335,6 +318,63 @@ region = "us-west-2"
         config.contains("model_provider = \"amazon-bedrock\""),
         "unmanaged Bedrock logout should not change the active provider"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn login_account_amazon_bedrock_saves_auth_without_changing_config() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            ..Default::default()
+        },
+    )?;
+    let config_before = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+
+    let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let id = mcp
+        .send_login_account_amazon_bedrock_request("bedrock-key", "us-west-2")
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(id)),
+    )
+    .await??;
+    let login: LoginAccountResponse = to_response(resp)?;
+    assert_eq!(login, LoginAccountResponse::AmazonBedrock {});
+
+    assert!(
+        codex_home
+            .path()
+            .join("model-providers")
+            .join("amazon-bedrock")
+            .join("auth.json")
+            .exists(),
+        "managed Amazon Bedrock auth should be saved"
+    );
+    let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    assert_eq!(config, config_before);
+
+    let params = GetAccountParams {
+        refresh_token: false,
+    };
+    let request_id = mcp.send_get_account_request(params).await?;
+
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let received: GetAccountResponse = to_response(resp)?;
+
+    let expected = GetAccountResponse {
+        account: Some(Account::AmazonBedrock {}),
+        requires_openai_auth: false,
+    };
+    assert_eq!(received, expected);
     Ok(())
 }
 
@@ -1738,6 +1778,40 @@ region = "us-west-2"
     )?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let params = GetAccountParams {
+        refresh_token: false,
+    };
+    let request_id = mcp.send_get_account_request(params).await?;
+
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let received: GetAccountResponse = to_response(resp)?;
+
+    let expected = GetAccountResponse {
+        account: Some(Account::AmazonBedrock {}),
+        requires_openai_auth: false,
+    };
+    assert_eq!(received, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_with_managed_bedrock_auth() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            ..Default::default()
+        },
+    )?;
+    save_amazon_bedrock_auth(codex_home.path(), "bedrock-key", "us-west-2")?;
+
+    let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let params = GetAccountParams {

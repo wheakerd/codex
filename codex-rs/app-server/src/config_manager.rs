@@ -11,6 +11,8 @@ use codex_exec_server::LOCAL_FS;
 use codex_features::feature_for_key;
 use codex_login::AuthManager;
 use codex_login::default_client::set_default_client_residency_requirement;
+use codex_model_provider::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider::load_amazon_bedrock_auth;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_json_to_toml::json_to_toml;
 use std::collections::BTreeMap;
@@ -145,6 +147,86 @@ impl ConfigManager {
             fallback_cwd,
         )
         .await
+    }
+
+    pub(crate) async fn load_latest_effective_config(
+        &self,
+        fallback_cwd: Option<PathBuf>,
+    ) -> std::io::Result<Config> {
+        let config = self.load_latest_config(fallback_cwd).await?;
+        self.apply_managed_provider_auth(config)
+    }
+
+    pub(crate) async fn load_effective_with_overrides(
+        &self,
+        request_overrides: Option<HashMap<String, serde_json::Value>>,
+        typesafe_overrides: ConfigOverrides,
+    ) -> std::io::Result<Config> {
+        let apply_managed_provider_auth = Self::should_apply_managed_provider_auth(
+            request_overrides.as_ref(),
+            &typesafe_overrides,
+        );
+        let config = self
+            .load_with_overrides(request_overrides, typesafe_overrides)
+            .await?;
+        if apply_managed_provider_auth {
+            self.apply_managed_provider_auth(config)
+        } else {
+            Ok(config)
+        }
+    }
+
+    pub(crate) async fn load_effective_for_cwd(
+        &self,
+        request_overrides: Option<HashMap<String, serde_json::Value>>,
+        typesafe_overrides: ConfigOverrides,
+        cwd: Option<PathBuf>,
+    ) -> std::io::Result<Config> {
+        let apply_managed_provider_auth = Self::should_apply_managed_provider_auth(
+            request_overrides.as_ref(),
+            &typesafe_overrides,
+        );
+        let config = self
+            .load_for_cwd(request_overrides, typesafe_overrides, cwd)
+            .await?;
+        if apply_managed_provider_auth {
+            self.apply_managed_provider_auth(config)
+        } else {
+            Ok(config)
+        }
+    }
+
+    fn apply_managed_provider_auth(&self, mut config: Config) -> std::io::Result<Config> {
+        let Some(auth) = load_amazon_bedrock_auth(&config.codex_home)? else {
+            return Ok(config);
+        };
+        let Some(mut provider) = config
+            .model_providers
+            .get(AMAZON_BEDROCK_PROVIDER_ID)
+            .cloned()
+        else {
+            warn!("managed Amazon Bedrock auth found, but provider is not configured");
+            return Ok(config);
+        };
+        let Some(aws) = provider.aws.as_mut() else {
+            warn!("managed Amazon Bedrock auth found, but provider has no AWS configuration");
+            return Ok(config);
+        };
+        aws.region = Some(auth.region);
+        config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
+        config.model_provider = provider.clone();
+        config
+            .model_providers
+            .insert(AMAZON_BEDROCK_PROVIDER_ID.to_string(), provider);
+        Ok(config)
+    }
+
+    fn should_apply_managed_provider_auth(
+        request_overrides: Option<&HashMap<String, serde_json::Value>>,
+        typesafe_overrides: &ConfigOverrides,
+    ) -> bool {
+        typesafe_overrides.model_provider.is_none()
+            && !request_overrides.is_some_and(|overrides| overrides.contains_key("model_provider"))
     }
 
     pub(crate) async fn load_latest_config_for_thread(

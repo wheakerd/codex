@@ -1153,6 +1153,20 @@ impl McpProcess {
         self.send_request("account/login/start", Some(params)).await
     }
 
+    /// Send an `account/login/start` JSON-RPC request for Amazon Bedrock login.
+    pub async fn send_login_account_amazon_bedrock_request(
+        &mut self,
+        key: &str,
+        region: &str,
+    ) -> anyhow::Result<i64> {
+        let params = LoginAccountParams::AmazonBedrock {
+            key: key.to_string(),
+            region: region.to_string(),
+        };
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("account/login/start", params).await
+    }
+
     /// Send an `account/login/start` JSON-RPC request for ChatGPT login.
     pub async fn send_login_account_chatgpt_request(&mut self) -> anyhow::Result<i64> {
         let params = serde_json::json!({

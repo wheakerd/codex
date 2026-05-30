@@ -589,7 +589,7 @@ impl TurnRequestProcessor {
                 };
                 let config = self
                     .config_manager
-                    .load_for_cwd(
+                    .load_effective_for_cwd(
                         /*request_overrides*/ None,
                         overrides,
                         Some(snapshot.cwd.to_path_buf()),

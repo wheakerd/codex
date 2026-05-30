@@ -995,7 +995,7 @@ impl ThreadRequestProcessor {
         let thread_start_started_at = std::time::Instant::now();
         let requested_cwd = typesafe_overrides.cwd.clone();
         let mut config = config_manager
-            .load_with_overrides(config_overrides.clone(), typesafe_overrides.clone())
+            .load_effective_with_overrides(config_overrides.clone(), typesafe_overrides.clone())
             .await
             .map_err(|err| config_load_error(&err))?;
 
@@ -2535,7 +2535,7 @@ impl ThreadRequestProcessor {
         // Derive a Config using the same logic as new conversation, honoring overrides if provided.
         let config = match self
             .config_manager
-            .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
+            .load_effective_for_cwd(request_overrides, typesafe_overrides, history_cwd)
             .await
         {
             Ok(config) => config,
@@ -3245,7 +3245,7 @@ impl ThreadRequestProcessor {
         // Derive a Config using the same logic as new conversation, honoring overrides if provided.
         let config = self
             .config_manager
-            .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
+            .load_effective_for_cwd(request_overrides, typesafe_overrides, history_cwd)
             .await
             .map_err(|err| config_load_error(&err))?;
 
