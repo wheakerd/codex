@@ -141,7 +141,7 @@ impl TokenActivityHistoryCell {
         width: u16,
     ) -> Vec<Line<'static>> {
         let mut lines = vec![" Token activity".bold().into()];
-        lines.extend(summary_lines(response, width));
+        lines.extend(summary_lines(response, graph_width(width)));
         let Some(buckets) = response.daily_usage_buckets.as_ref() else {
             lines.push("   Token activity history unavailable".dim().into());
             return lines;
@@ -159,11 +159,7 @@ impl TokenActivityHistoryCell {
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let values = daily_values(buckets, today);
-        let available_columns = usize::from(width)
-            .saturating_sub(CHART_LEFT_WIDTH)
-            .saturating_add(1)
-            / 2;
-        let shown_columns = available_columns.min(WEEK_COUNT);
+        let shown_columns = shown_columns(width);
         if shown_columns == 0 {
             lines.push("   Widen terminal to show activity graph".dim().into());
             return lines;
@@ -198,6 +194,21 @@ impl TokenActivityHistoryCell {
         lines.push(legend_line(&palette));
         lines
     }
+}
+
+fn shown_columns(width: u16) -> usize {
+    (usize::from(width)
+        .saturating_sub(CHART_LEFT_WIDTH)
+        .saturating_add(1)
+        / 2)
+    .min(WEEK_COUNT)
+}
+
+fn graph_width(width: u16) -> u16 {
+    if width == u16::MAX {
+        return width;
+    }
+    (CHART_LEFT_WIDTH + shown_columns(width) * 2 - 1) as u16
 }
 
 fn summary_lines(response: &GetAccountTokenUsageResponse, width: u16) -> Vec<Line<'static>> {
@@ -640,6 +651,30 @@ mod tests {
     }
 
     #[test]
+    fn daily_graph_snapshot_stays_left_aligned_in_wide_terminal() {
+        assert_eq!(graph_width(/*width*/ 160), 107);
+        assert_eq!(graph_width(/*width*/ u16::MAX), u16::MAX);
+
+        let today = NaiveDate::from_ymd_opt(2026, 5, 29).expect("valid date");
+        let cell = TokenActivityHistoryCell {
+            view: TokenActivityView::Daily,
+            state: Arc::new(RwLock::new(TokenActivityState::Loading)),
+        };
+        let lines = cell.chart_lines(&[], today, /*width*/ 160);
+        let rendered = [&lines[0], &lines[1], lines.last().expect("legend line")]
+            .into_iter()
+            .map(|line| line.to_string().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_snapshot!(rendered, @"
+            Jun       Jul     Aug       Sep     Oct     Nov       Dec     Jan     Feb     Mar       Apr     May
+         Su ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎ ∎
+           Less ■ ■ ■ ■ ■ More
+        ");
+    }
+
+    #[test]
     fn summary_snapshot_centers_and_splits_when_needed() {
         let response = GetAccountTokenUsageResponse {
             summary: AccountTokenUsageSummary {
@@ -652,7 +687,7 @@ mod tests {
             daily_usage_buckets: None,
         };
         let rendered = |width| {
-            summary_lines(&response, width)
+            summary_lines(&response, graph_width(width))
                 .into_iter()
                 .map(|line| line.to_string().trim_end().to_string())
                 .collect::<Vec<_>>()
@@ -667,10 +702,10 @@ mod tests {
             ),
             @"
         wide:
-                        Lifetime 21.4B · Peak 835M · Current streak 54d · Longest streak 54d · Longest turn 232m
+                 Lifetime 21.4B · Peak 835M · Current streak 54d · Longest streak 54d · Longest turn 232m
 
         narrow:
-                         Lifetime 21.4B · Peak 835M · Longest turn 232m
+                        Lifetime 21.4B · Peak 835M · Longest turn 232m
                             Current streak 54d · Longest streak 54d
         "
         );
