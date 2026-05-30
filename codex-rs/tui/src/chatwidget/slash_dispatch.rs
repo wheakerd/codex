@@ -414,6 +414,9 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Tokens => {
+                self.add_token_activity_output(tokens::TokenActivityView::Daily);
+            }
             SlashCommand::Ide => {
                 self.handle_ide_command();
             }
@@ -614,6 +617,12 @@ impl ChatWidget {
         } = prepared;
         let trimmed = args.trim();
         match cmd {
+            SlashCommand::Tokens => match tokens::TokenActivityView::parse(trimmed) {
+                Some(view) => self.add_token_activity_output(view),
+                None => {
+                    self.add_error_message("Usage: /tokens [daily|weekly|cumulative]".to_string())
+                }
+            },
             SlashCommand::Ide => {
                 self.handle_ide_command_args(trimmed);
             }
@@ -944,6 +953,7 @@ impl ChatWidget {
             collaboration_modes_enabled: self.collaboration_modes_enabled(),
             connectors_enabled: self.connectors_enabled(),
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
+            token_activity_command_enabled: self.has_chatgpt_account,
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
@@ -961,6 +971,7 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Ide
             | SlashCommand::Status
+            | SlashCommand::Tokens
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
