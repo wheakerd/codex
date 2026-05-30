@@ -63,7 +63,7 @@ fn write_plugin_skill_plugin(home: &TempDir) -> std::path::PathBuf {
         "---\ndescription: inspect sample data\n---\n\n# body\n",
     )
     .expect("write plugin skill");
-    skill_dir.join("SKILL.md")
+    std::fs::canonicalize(skill_dir.join("SKILL.md")).expect("canonicalize plugin skill")
 }
 
 fn write_plugin_mcp_plugin(home: &TempDir, command: &str) {
@@ -255,9 +255,12 @@ async fn explicit_plugin_mentions_inject_plugin_guidance() -> Result<()> {
     write_plugin_mcp_plugin(codex_home.as_ref(), &rmcp_test_server_bin);
     write_plugin_app_plugin(codex_home.as_ref());
 
-    let codex =
-        build_apps_enabled_plugin_test_codex(&server, codex_home, apps_server.chatgpt_base_url)
-            .await?;
+    let codex = build_apps_enabled_plugin_test_codex(
+        &server,
+        Arc::clone(&codex_home),
+        apps_server.chatgpt_base_url,
+    )
+    .await?;
     wait_for_mcp_server(&codex, "sample").await?;
 
     codex
@@ -347,9 +350,12 @@ async fn explicit_app_only_plugin_mention_waits_for_pending_apps_startup() -> Re
 
     let codex_home = Arc::new(TempDir::new()?);
     write_plugin_app_plugin(codex_home.as_ref());
-    let codex =
-        build_apps_enabled_plugin_test_codex(&server, codex_home, apps_server.chatgpt_base_url)
-            .await?;
+    let codex = build_apps_enabled_plugin_test_codex(
+        &server,
+        Arc::clone(&codex_home),
+        apps_server.chatgpt_base_url,
+    )
+    .await?;
 
     codex
         .submit(Op::UserInput {
@@ -407,9 +413,12 @@ async fn explicitly_selected_skill_waits_for_pending_apps_startup() -> Result<()
         "---\ndescription: inspect sample data\n---\n\nUse [$calendar](app://calendar).\n",
     )
     .expect("write plugin app skill");
-    let codex =
-        build_apps_enabled_plugin_test_codex(&server, codex_home, apps_server.chatgpt_base_url)
-            .await?;
+    let codex = build_apps_enabled_plugin_test_codex(
+        &server,
+        Arc::clone(&codex_home),
+        apps_server.chatgpt_base_url,
+    )
+    .await?;
 
     codex
         .submit(Op::UserInput {
@@ -454,9 +463,12 @@ async fn explicitly_selected_non_app_skill_does_not_wait_for_pending_apps_startu
 
     let codex_home = Arc::new(TempDir::new()?);
     let skill_path = write_plugin_skill_plugin(codex_home.as_ref());
-    let codex =
-        build_apps_enabled_plugin_test_codex(&server, codex_home, apps_server.chatgpt_base_url)
-            .await?;
+    let codex = build_apps_enabled_plugin_test_codex(
+        &server,
+        Arc::clone(&codex_home),
+        apps_server.chatgpt_base_url,
+    )
+    .await?;
 
     let completed = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), async {
         codex
@@ -502,6 +514,9 @@ async fn selected_skill_rewaits_for_app_after_installing_mcp_dependency() -> Res
         Some(Duration::from_secs(/*secs*/ 2)),
     )
     .await?;
+    let dependency_server = start_mock_server().await;
+    AppsTestServer::mount_with_connector_name(&dependency_server, "Dependency").await?;
+    let dependency_url = format!("{}/api/codex/apps", dependency_server.uri());
     let mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
@@ -517,17 +532,19 @@ async fn selected_skill_rewaits_for_app_after_installing_mcp_dependency() -> Res
     .expect("write plugin app skill");
     let skill_agents_dir = skill_path.parent().expect("skill dir").join("agents");
     std::fs::create_dir_all(&skill_agents_dir).expect("create skill agents dir");
-    let dependency_command = stdio_server_bin()?;
     std::fs::write(
         skill_agents_dir.join("openai.yaml"),
         format!(
-            "dependencies:\n  tools:\n    - type: \"mcp\"\n      value: \"dependency\"\n      transport: \"stdio\"\n      command: \"{dependency_command}\"\n"
+            "dependencies:\n  tools:\n    - type: \"mcp\"\n      value: \"dependency\"\n      transport: \"streamable_http\"\n      url: \"{dependency_url}\"\n"
         ),
     )
     .expect("write plugin skill dependencies");
-    let codex =
-        build_apps_enabled_plugin_test_codex(&server, codex_home, apps_server.chatgpt_base_url)
-            .await?;
+    let codex = build_apps_enabled_plugin_test_codex(
+        &server,
+        Arc::clone(&codex_home),
+        apps_server.chatgpt_base_url,
+    )
+    .await?;
 
     codex
         .submit(Op::UserInput {
@@ -556,7 +573,9 @@ async fn selected_skill_rewaits_for_app_after_installing_mcp_dependency() -> Res
         "expected app referenced by selected skill after dependency installation refresh"
     );
     assert!(
-        request.tool_by_name("mcp__dependency", "echo").is_some(),
+        request
+            .tool_by_name("mcp__dependency", "calendar_create_event")
+            .is_some(),
         "expected newly installed MCP dependency on the first turn"
     );
 
