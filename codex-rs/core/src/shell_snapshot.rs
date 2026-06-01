@@ -33,7 +33,8 @@ pub struct ShellSnapshot {
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_RETENTION: Duration = Duration::from_secs(60 * 60 * 24 * 3); // 3 days retention.
 const SNAPSHOT_DIR: &str = "shell_snapshots";
-const EXCLUDED_EXPORT_VARS: &[&str] = &["PWD", "OLDPWD", "RUST_LOG"];
+const EXCLUDED_EXPORT_VARS: &[&str] = &["PWD", "OLDPWD"];
+const EXCLUDED_INHERITED_VARS: &[&str] = &["RUST_LOG"];
 
 impl ShellSnapshot {
     pub fn start_snapshotting(
@@ -285,6 +286,7 @@ async fn run_script_with_timeout(
     // returns a ref of handler.
     let mut handler = Command::new(&args[0]);
     handler.args(&args[1..]);
+    remove_inherited_snapshot_vars(&mut handler);
     handler.stdin(Stdio::null());
     handler.current_dir(cwd);
     #[cfg(unix)]
@@ -307,6 +309,12 @@ async fn run_script_with_timeout(
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn remove_inherited_snapshot_vars(handler: &mut Command) {
+    for name in EXCLUDED_INHERITED_VARS {
+        handler.env_remove(name);
+    }
 }
 
 fn excluded_exports_regex() -> String {
