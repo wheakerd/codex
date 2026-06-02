@@ -683,6 +683,10 @@ impl Session {
             session_configuration.cwd(),
             &codex_home,
             &session_source,
+            &session_configuration
+                .original_config_do_not_use
+                .permissions
+                .shell_environment_policy,
         );
 
         if permission_profile_changed {

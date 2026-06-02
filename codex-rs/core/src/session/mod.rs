@@ -302,6 +302,7 @@ use crate::rollout::map_session_init_error;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
+use crate::shell_snapshot::ShellSnapshotParams;
 use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
 use crate::state::SessionServices;
@@ -1392,6 +1393,7 @@ impl Session {
         next_cwd: &AbsolutePathBuf,
         codex_home: &AbsolutePathBuf,
         session_source: &SessionSource,
+        shell_environment_policy: &ShellEnvironmentPolicy,
     ) {
         if previous_cwd == next_cwd {
             return;
@@ -1408,14 +1410,18 @@ impl Session {
             return;
         }
 
+        let params = ShellSnapshotParams {
+            codex_home: codex_home.clone(),
+            session_id: self.thread_id,
+            session_cwd: next_cwd.clone(),
+            shell_environment_policy: shell_environment_policy.clone(),
+            session_telemetry: self.services.session_telemetry.clone(),
+            state_db: self.services.state_db.clone(),
+        };
         ShellSnapshot::refresh_snapshot(
-            codex_home.clone(),
-            self.thread_id,
-            next_cwd.clone(),
+            params,
             self.services.user_shell.as_ref().clone(),
             self.services.shell_snapshot_tx.clone(),
-            self.services.session_telemetry.clone(),
-            self.services.state_db.clone(),
         );
     }
 
@@ -1432,6 +1438,7 @@ impl Session {
             next_cwd,
             codex_home,
             session_source,
+            shell_environment_policy,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1454,6 +1461,11 @@ impl Session {
             let next_cwd = updated.cwd().clone();
             let codex_home = updated.codex_home.clone();
             let session_source = updated.session_source.clone();
+            let shell_environment_policy = updated
+                .original_config_do_not_use
+                .permissions
+                .shell_environment_policy
+                .clone();
             state.session_configuration = updated;
             (
                 previous_config,
@@ -1463,6 +1475,7 @@ impl Session {
                 next_cwd,
                 codex_home,
                 session_source,
+                shell_environment_policy,
             )
         };
 
@@ -1472,6 +1485,7 @@ impl Session {
             &next_cwd,
             &codex_home,
             &session_source,
+            &shell_environment_policy,
         );
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()

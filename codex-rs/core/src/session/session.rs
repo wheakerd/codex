@@ -837,12 +837,18 @@ impl Session {
                     tx
                 } else {
                     ShellSnapshot::start_snapshotting(
-                        config.codex_home.clone(),
-                        thread_id,
-                        session_configuration.cwd().clone(),
+                        ShellSnapshotParams {
+                            codex_home: config.codex_home.clone(),
+                            session_id: thread_id,
+                            session_cwd: session_configuration.cwd().clone(),
+                            shell_environment_policy: config
+                                .permissions
+                                .shell_environment_policy
+                                .clone(),
+                            session_telemetry: session_telemetry.clone(),
+                            state_db: state_db_ctx.clone(),
+                        },
                         &mut default_shell,
-                        session_telemetry.clone(),
-                        state_db_ctx.clone(),
                     )
                 }
             } else {
