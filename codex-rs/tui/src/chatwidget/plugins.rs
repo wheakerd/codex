@@ -2143,8 +2143,8 @@ impl ChatWidget {
             let plugin_detail_request =
                 plugin_detail_request_for_entry(marketplace, plugin, preferred_local_sources);
             let can_view_details = plugin_detail_request.is_some();
-            let can_toggle_plugin =
-                plugin.installed && plugin.availability != PluginAvailability::DisabledByAdmin;
+            let disabled_by_admin = plugin.availability == PluginAvailability::DisabledByAdmin;
+            let can_toggle_plugin = plugin.installed && !disabled_by_admin;
             let selected_status_label = format!("{status_label:<status_label_width$}");
             let selected_description = if can_toggle_plugin {
                 let toggle_action = if plugin.enabled { "disable" } else { "enable" };
@@ -2159,6 +2159,8 @@ impl ChatWidget {
                 format!("{selected_status_label}   Press Enter to view plugin details.")
             } else if plugin.installed {
                 format!("{selected_status_label}   Plugin details are unavailable.")
+            } else if disabled_by_admin && can_view_details {
+                format!("{selected_status_label}   Press Enter to view plugin details.")
             } else if can_view_details {
                 format!("{selected_status_label}   Press Enter to install or view plugin details.")
             } else {
