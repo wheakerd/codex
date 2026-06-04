@@ -2818,7 +2818,7 @@ fn preferred_local_plugin_sources(
 }
 
 fn plugin_request_name(plugin: &PluginSummary) -> String {
-    if matches!(plugin.source, PluginSource::Remote)
+    if matches!(&plugin.source, PluginSource::Remote)
         && let Some(remote_plugin_id) = plugin_remote_identity(plugin)
     {
         return remote_plugin_id;
@@ -2835,7 +2835,7 @@ fn plugin_remote_identity(plugin: &PluginSummary) -> Option<String> {
 }
 
 fn plugin_uninstall_id(plugin: &PluginSummary) -> Option<String> {
-    if matches!(plugin.source, PluginSource::Remote) {
+    if matches!(&plugin.source, PluginSource::Remote) {
         return plugin_remote_identity(plugin);
     }
     Some(plugin.id.clone())
