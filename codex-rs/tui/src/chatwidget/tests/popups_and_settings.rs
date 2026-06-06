@@ -911,8 +911,10 @@ async fn plugins_popup_admin_disabled_installed_plugin_has_no_toggle_hint() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 120);
     assert!(
-        popup.contains("Disabled by admin")
+        popup.contains("[!] Admin Blocked")
+            && popup.contains("Disabled")
             && popup.contains("Press Enter to view plugin details.")
+            && !popup.contains("Disabled by admin")
             && !popup.contains("Space to disable"),
         "expected admin-disabled installed row to omit toggle hint, got:\n{popup}"
     );
