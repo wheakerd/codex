@@ -1279,6 +1279,13 @@ pub(super) fn plugins_test_absolute_path(path: &str) -> AbsolutePathBuf {
         .abs()
 }
 
+pub(super) fn plugins_test_personal_marketplace_path() -> AbsolutePathBuf {
+    dirs::home_dir()
+        .expect("home directory should be available")
+        .join(".agents/plugins/marketplace.json")
+        .abs()
+}
+
 pub(super) fn plugins_test_interface(
     display_name: Option<&str>,
     short_description: Option<&str>,
@@ -1365,6 +1372,21 @@ pub(super) fn plugins_test_remote_summary(
     }
 }
 
+pub(super) fn plugins_test_remote_marketplace(
+    name: &str,
+    display_name: &str,
+    plugins: Vec<PluginSummary>,
+) -> PluginMarketplaceEntry {
+    PluginMarketplaceEntry {
+        name: name.to_string(),
+        path: None,
+        interface: Some(MarketplaceInterface {
+            display_name: Some(display_name.to_string()),
+        }),
+        plugins,
+    }
+}
+
 pub(super) fn plugins_test_curated_marketplace(
     plugins: Vec<PluginSummary>,
 ) -> PluginMarketplaceEntry {
@@ -1404,8 +1426,11 @@ pub(super) fn render_loaded_plugins_popup(
     response: PluginListResponse,
 ) -> String {
     let cwd = chat.config.cwd.clone();
+    let response_for_refresh = response.clone();
     chat.on_plugins_loaded(cwd.to_path_buf(), Ok(response));
     chat.add_plugins_output();
+    chat.plugins_fetch_state.in_flight_cwd = None;
+    chat.on_plugins_loaded(cwd.to_path_buf(), Ok(response_for_refresh));
     render_bottom_popup(chat, /*width*/ 100)
 }
 
@@ -1459,6 +1484,23 @@ pub(super) fn plugins_test_detail(
             .collect(),
         app_templates: Vec::new(),
         mcp_servers: mcp_servers.iter().map(|name| (*name).to_string()).collect(),
+    }
+}
+
+pub(super) fn plugins_test_remote_detail(
+    marketplace_name: &str,
+    summary: PluginSummary,
+    description: Option<&str>,
+) -> PluginDetail {
+    PluginDetail {
+        marketplace_name: marketplace_name.to_string(),
+        marketplace_path: None,
+        summary,
+        description: description.map(str::to_string),
+        skills: Vec::new(),
+        hooks: Vec::new(),
+        apps: Vec::new(),
+        mcp_servers: Vec::new(),
     }
 }
 
