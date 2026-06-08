@@ -837,7 +837,7 @@ async fn plugin_detail_local_plugins_do_not_offer_tui_share_actions() {
 
 #[tokio::test]
 async fn plugin_detail_popup_shows_admin_disabled_status_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
 
     let summary = PluginSummary {
@@ -874,11 +874,22 @@ async fn plugin_detail_popup_shows_admin_disabled_status_snapshot() {
         status_row,
         @"  Admin Blocked · Disabled by admin · ChatGPT Marketplace"
     );
+    assert!(
+        popup.contains("This plugin is disabled by your workspace admin.")
+            && !popup.contains("Install this plugin now."),
+        "expected admin-disabled detail to block install, got:\n{popup}"
+    );
+
+    while rx.try_recv().is_ok() {}
+    assert!(
+        rx.try_recv().is_err(),
+        "expected no action after rendering disabled install state"
+    );
 }
 
 #[tokio::test]
 async fn plugins_popup_admin_disabled_installed_plugin_has_no_toggle_hint() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
 
     let summary = PluginSummary {
@@ -905,6 +916,16 @@ async fn plugins_popup_admin_disabled_installed_plugin_has_no_toggle_hint() {
             && !popup.contains("Space to disable"),
         "expected admin-disabled installed row to omit toggle hint, got:\n{popup}"
     );
+
+    while rx.try_recv().is_ok() {}
+    let before = render_bottom_popup(&chat, /*width*/ 120);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let after = render_bottom_popup(&chat, /*width*/ 120);
+    assert!(
+        rx.try_recv().is_err(),
+        "space should not toggle admin-disabled installed plugins"
+    );
+    assert_eq!(after, before);
 }
 
 #[tokio::test]
