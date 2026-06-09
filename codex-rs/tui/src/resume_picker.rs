@@ -33,10 +33,16 @@ use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_config::types::SessionPickerViewMode;
 use codex_protocol::ThreadId;
@@ -62,6 +68,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::warn;
 use unicode_width::UnicodeWidthStr;
+use uuid::Uuid;
 
 const PAGE_SIZE: usize = 25;
 const LOAD_NEAR_THRESHOLD: usize = 5;
@@ -151,8 +158,19 @@ struct PageLoadRequest {
 
 enum PickerLoadRequest {
     Page(PageLoadRequest),
-    Preview { thread_id: ThreadId },
-    Transcript { thread_id: ThreadId },
+    Preview {
+        thread_id: ThreadId,
+    },
+    Transcript {
+        thread_id: ThreadId,
+    },
+    Validate {
+        thread_id: ThreadId,
+        validation_token: usize,
+        cwd_filter: Option<PathBuf>,
+        provider_filter: ProviderFilter,
+        query: String,
+    },
 }
 
 #[derive(Clone)]
@@ -256,6 +274,11 @@ enum BackgroundEvent {
         thread_id: ThreadId,
         transcript: std::io::Result<TranscriptCells>,
     },
+    Validation {
+        thread_id: ThreadId,
+        validation_token: usize,
+        target: std::io::Result<SessionTarget>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -293,14 +316,26 @@ struct SessionPickerRunOptions {
     view_persistence: Option<SessionPickerViewPersistence>,
     pager_keymap: PagerKeymap,
     list_keymap: ListKeymap,
-    initial_lookup_mode: ThreadListLookupMode,
-    reconcile_initial_page: bool,
+    initial_page_load: InitialPageLoadState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThreadListLookupMode {
     StateDbOnly,
     ScanAndRepair,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InitialPageLoadState {
+    ScanAndRepair,
+    StateDbFirst,
+    VerifyingStateDb,
+}
+
+impl InitialPageLoadState {
+    fn is_verifying(self) -> bool {
+        self == Self::VerifyingStateDb
+    }
 }
 
 /// Interactive session picker that lists app-server threads with simple search,
@@ -387,12 +422,11 @@ async fn run_resume_picker_with_launch_context(
         }),
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
-        initial_lookup_mode: if uses_remote_workspace {
-            ThreadListLookupMode::ScanAndRepair
+        initial_page_load: if uses_remote_workspace {
+            InitialPageLoadState::ScanAndRepair
         } else {
-            ThreadListLookupMode::StateDbOnly
+            InitialPageLoadState::StateDbFirst
         },
-        reconcile_initial_page: !uses_remote_workspace,
     };
     run_session_picker_with_loader(
         tui,
@@ -438,12 +472,11 @@ pub async fn run_fork_picker_with_app_server(
         }),
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
-        initial_lookup_mode: if uses_remote_workspace {
-            ThreadListLookupMode::ScanAndRepair
+        initial_page_load: if uses_remote_workspace {
+            InitialPageLoadState::ScanAndRepair
         } else {
-            ThreadListLookupMode::StateDbOnly
+            InitialPageLoadState::StateDbFirst
         },
-        reconcile_initial_page: !uses_remote_workspace,
     };
     run_session_picker_with_loader(
         tui,
@@ -480,8 +513,7 @@ async fn run_session_picker_with_loader(
     state.pager_keymap = options.pager_keymap;
     state.list_keymap = options.list_keymap;
     state.launch_context = options.launch_context;
-    state.initial_lookup_mode = options.initial_lookup_mode;
-    state.reconcile_initial_page = options.reconcile_initial_page;
+    state.initial_page_load = options.initial_page_load;
     state.start_initial_load();
     state.request_frame();
 
@@ -523,6 +555,9 @@ async fn run_session_picker_with_loader(
             }
             Some(event) = background_events.next() => {
                 state.handle_background_event(event).await?;
+                if let Some(selection) = state.accepted_selection.take() {
+                    return Ok(selection);
+                }
             }
             else => break,
         }
@@ -585,6 +620,8 @@ fn spawn_app_server_page_loader(
     raw_reasoning_visibility: RawReasoningVisibility,
     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
 ) -> PickerLoader {
+    let validation_request_handle = app_server.request_handle();
+    let validation_bg_tx = bg_tx.clone();
     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
 
     tokio::spawn(async move {
@@ -666,6 +703,9 @@ fn spawn_app_server_page_loader(
                         transcript,
                     });
                 }
+                PickerLoadRequest::Validate { .. } => {
+                    unreachable!("validation requests bypass the queued picker loader");
+                }
             }
         }
         if let Err(err) = app_server.shutdown().await {
@@ -673,8 +713,36 @@ fn spawn_app_server_page_loader(
         }
     });
 
-    Arc::new(move |request: PickerLoadRequest| {
-        let _ = request_tx.send(request);
+    Arc::new(move |request: PickerLoadRequest| match request {
+        PickerLoadRequest::Validate {
+            thread_id,
+            validation_token,
+            cwd_filter,
+            provider_filter,
+            query,
+        } => {
+            let request_handle = validation_request_handle.clone();
+            let bg_tx = validation_bg_tx.clone();
+            tokio::spawn(async move {
+                let target = validate_session_target(
+                    request_handle,
+                    thread_id,
+                    cwd_filter.as_deref(),
+                    provider_filter,
+                    include_non_interactive,
+                    &query,
+                )
+                .await;
+                let _ = bg_tx.send(BackgroundEvent::Validation {
+                    thread_id,
+                    validation_token,
+                    target,
+                });
+            });
+        }
+        request => {
+            let _ = request_tx.send(request);
+        }
     })
 }
 
@@ -719,6 +787,7 @@ struct PickerState {
     search_state: SearchState,
     next_request_token: usize,
     next_search_token: usize,
+    next_validation_token: usize,
     picker_loader: PickerLoader,
     view_rows: Option<usize>,
     view_width: Option<u16>,
@@ -741,9 +810,9 @@ struct PickerState {
     overlay: Option<Overlay>,
     pager_keymap: PagerKeymap,
     list_keymap: ListKeymap,
-    initial_lookup_mode: ThreadListLookupMode,
-    reconcile_initial_page: bool,
-    fast_initial_page_loaded: bool,
+    initial_page_load: InitialPageLoadState,
+    pending_accept: Option<PendingAccept>,
+    accepted_selection: Option<SessionSelection>,
 }
 
 struct PaginationState {
@@ -764,6 +833,12 @@ enum LoadingState {
 struct PendingLoad {
     request_token: usize,
     search_token: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingAccept {
+    thread_id: ThreadId,
+    validation_token: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -894,6 +969,101 @@ async fn load_transcript_preview(
     Ok(lines)
 }
 
+async fn validate_session_target(
+    request_handle: AppServerRequestHandle,
+    thread_id: ThreadId,
+    cwd_filter: Option<&Path>,
+    provider_filter: ProviderFilter,
+    include_non_interactive: bool,
+    query: &str,
+) -> std::io::Result<SessionTarget> {
+    let response: ThreadReadResponse = request_handle
+        .request_typed(ClientRequest::ThreadRead {
+            request_id: RequestId::String(format!("resume-picker-validation-{}", Uuid::new_v4())),
+            params: ThreadReadParams {
+                thread_id: thread_id.to_string(),
+                include_turns: true,
+            },
+        })
+        .await
+        .map_err(std::io::Error::other)?;
+    validated_session_target(
+        response.thread,
+        thread_id,
+        cwd_filter,
+        &provider_filter,
+        include_non_interactive,
+        query,
+    )
+}
+
+fn validated_session_target(
+    thread: Thread,
+    thread_id: ThreadId,
+    cwd_filter: Option<&Path>,
+    provider_filter: &ProviderFilter,
+    include_non_interactive: bool,
+    query: &str,
+) -> std::io::Result<SessionTarget> {
+    let validated_thread_id = ThreadId::from_string(&thread.id).map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("thread/read returned an invalid thread id: {err}"),
+        )
+    })?;
+    if validated_thread_id != thread_id
+        || !provider_matches(provider_filter, &thread.model_provider)
+        || !source_matches(&thread.source, include_non_interactive)
+        || cwd_filter.is_some_and(|cwd_filter| !paths_match(thread.cwd.as_path(), cwd_filter))
+        || thread.path.as_deref().is_some_and(rollout_path_is_archived)
+        || (!query.is_empty() && !thread_matches_query(&thread, query))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "selected session no longer matches the picker",
+        ));
+    }
+
+    Ok(SessionTarget {
+        path: thread.path,
+        thread_id,
+    })
+}
+
+fn thread_matches_query(thread: &Thread, query: &str) -> bool {
+    thread.preview.to_lowercase().contains(query)
+        || thread
+            .name
+            .as_ref()
+            .is_some_and(|name| name.to_lowercase().contains(query))
+        || thread.id.to_lowercase().contains(query)
+        || thread
+            .git_info
+            .as_ref()
+            .and_then(|git_info| git_info.branch.as_ref())
+            .is_some_and(|branch| branch.to_lowercase().contains(query))
+        || thread.cwd.to_string_lossy().to_lowercase().contains(query)
+}
+
+fn provider_matches(provider_filter: &ProviderFilter, model_provider: &str) -> bool {
+    match provider_filter {
+        ProviderFilter::Any => true,
+        ProviderFilter::MatchDefault(default_provider) => default_provider == model_provider,
+    }
+}
+
+fn source_matches(source: &SessionSource, include_non_interactive: bool) -> bool {
+    matches!(source, SessionSource::Cli | SessionSource::VsCode)
+        || (include_non_interactive
+            && matches!(source, SessionSource::Exec | SessionSource::AppServer))
+}
+
+fn rollout_path_is_archived(path: &Path) -> bool {
+    path.components().any(|component| {
+        component.as_os_str() == std::ffi::OsStr::new(codex_rollout::ARCHIVED_SESSIONS_SUBDIR)
+    })
+}
+
 impl SearchState {
     fn active_token(&self) -> Option<usize> {
         match self {
@@ -1000,6 +1170,7 @@ impl PickerState {
             search_state: SearchState::Idle,
             next_request_token: 0,
             next_search_token: 0,
+            next_validation_token: 0,
             picker_loader,
             view_rows: None,
             view_width: None,
@@ -1022,9 +1193,9 @@ impl PickerState {
             overlay: None,
             pager_keymap: RuntimeKeymap::defaults().pager,
             list_keymap: RuntimeKeymap::defaults().list,
-            initial_lookup_mode: ThreadListLookupMode::ScanAndRepair,
-            reconcile_initial_page: false,
-            fast_initial_page_loaded: false,
+            initial_page_load: InitialPageLoadState::ScanAndRepair,
+            pending_accept: None,
+            accepted_selection: None,
         }
     }
 
@@ -1125,6 +1296,9 @@ impl PickerState {
         if self.is_transcript_loading() {
             return Ok(self.handle_transcript_loading_key(key));
         }
+        if self.pending_accept.is_some() {
+            return Ok(self.handle_pending_accept_key(key));
+        }
         if !self.list_keymap.page_down.is_pressed(key) {
             self.pending_page_down_target = None;
         }
@@ -1189,12 +1363,6 @@ impl PickerState {
                 self.toggle_density().await;
             }
             _ if self.list_keymap.accept.is_pressed(key) => {
-                if self.fast_initial_page_loaded {
-                    self.inline_error =
-                        Some(String::from("Wait for session verification to finish"));
-                    self.request_frame();
-                    return Ok(None);
-                }
                 if let Some(row) = self.filtered_rows.get(self.selected) {
                     let path = row.path.clone();
                     let thread_id = match row.thread_id {
@@ -1208,6 +1376,24 @@ impl PickerState {
                         },
                     };
                     if let Some(thread_id) = thread_id {
+                        if self.initial_page_load.is_verifying() {
+                            let validation_token = self.next_validation_token;
+                            self.next_validation_token =
+                                self.next_validation_token.wrapping_add(1);
+                            self.pending_accept = Some(PendingAccept {
+                                thread_id,
+                                validation_token,
+                            });
+                            (self.picker_loader)(PickerLoadRequest::Validate {
+                                thread_id,
+                                validation_token,
+                                cwd_filter: self.active_cwd_filter(),
+                                provider_filter: self.provider_filter.clone(),
+                                query: self.query.to_lowercase(),
+                            });
+                            self.request_frame();
+                            return Ok(None);
+                        }
                         return Ok(Some(self.action.selection(path, thread_id)));
                     }
                     self.inline_error = Some(match path {
@@ -1318,6 +1504,22 @@ impl PickerState {
         Ok(None)
     }
 
+    fn handle_pending_accept_key(&mut self, key: KeyEvent) -> Option<SessionSelection> {
+        match key {
+            KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => Some(SessionSelection::Exit),
+            _ if self.list_keymap.cancel.is_pressed(key) => {
+                self.pending_accept = None;
+                self.request_frame();
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn handle_paste(&mut self, pasted: String) {
         if self.is_transcript_loading() {
             return;
@@ -1336,8 +1538,14 @@ impl PickerState {
     fn start_initial_load(&mut self) {
         self.relative_time_reference = Some(Utc::now());
         self.reset_pagination();
-        self.pagination.lookup_mode = self.initial_lookup_mode;
-        self.fast_initial_page_loaded = false;
+        let (lookup_mode, reconcile_after_load) = match self.initial_page_load {
+            InitialPageLoadState::ScanAndRepair => (ThreadListLookupMode::ScanAndRepair, false),
+            InitialPageLoadState::StateDbFirst | InitialPageLoadState::VerifyingStateDb => {
+                self.initial_page_load = InitialPageLoadState::StateDbFirst;
+                (ThreadListLookupMode::StateDbOnly, true)
+            }
+        };
+        self.pagination.lookup_mode = lookup_mode;
         self.all_rows.clear();
         self.filtered_rows.clear();
         self.seen_rows.clear();
@@ -1368,8 +1576,8 @@ impl PickerState {
             cwd_filter: self.active_cwd_filter(),
             provider_filter: self.provider_filter.clone(),
             sort_key: self.sort_key,
-            lookup_mode: self.initial_lookup_mode,
-            reconcile_after_load: self.reconcile_initial_page,
+            lookup_mode: self.pagination.lookup_mode,
+            reconcile_after_load,
         }));
     }
 
@@ -1391,7 +1599,7 @@ impl PickerState {
                 match phase {
                     PageLoadPhase::Fast => {
                         let page = page.map_err(color_eyre::Report::from)?;
-                        self.fast_initial_page_loaded = true;
+                        self.initial_page_load = InitialPageLoadState::VerifyingStateDb;
                         self.pagination.lookup_mode = ThreadListLookupMode::StateDbOnly;
                         self.replace_with_page(page);
                     }
@@ -1399,17 +1607,17 @@ impl PickerState {
                         self.pagination.loading = LoadingState::Idle;
                         let search_needs_reevaluation = match page {
                             Ok(page) => {
-                                self.fast_initial_page_loaded = false;
+                                self.initial_page_load = InitialPageLoadState::StateDbFirst;
                                 self.pagination.lookup_mode = ThreadListLookupMode::ScanAndRepair;
                                 self.replace_with_page(page);
                                 true
                             }
-                            Err(err) if self.fast_initial_page_loaded => {
+                            Err(err) if self.initial_page_load.is_verifying() => {
                                 warn!(
                                     %err,
                                     "Session picker reconciliation failed; keeping State DB results"
                                 );
-                                self.fast_initial_page_loaded = false;
+                                self.initial_page_load = InitialPageLoadState::StateDbFirst;
                                 self.request_frame();
                                 false
                             }
@@ -1467,6 +1675,33 @@ impl PickerState {
                     self.request_frame();
                 }
             },
+            BackgroundEvent::Validation {
+                thread_id,
+                validation_token,
+                target,
+            } => {
+                if self.pending_accept
+                    != Some(PendingAccept {
+                        thread_id,
+                        validation_token,
+                    })
+                {
+                    return Ok(());
+                }
+                self.pending_accept = None;
+                match target {
+                    Ok(target) => {
+                        self.accepted_selection =
+                            Some(self.action.selection(target.path, target.thread_id));
+                    }
+                    Err(err) => {
+                        warn!(%err, %thread_id, "Selected session failed validation");
+                        self.inline_error =
+                            Some(String::from("Selected session is no longer available"));
+                        self.request_frame();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1996,10 +2231,7 @@ fn thread_list_params(
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
-        use_state_db_only: match lookup_mode {
-            ThreadListLookupMode::StateDbOnly => true,
-            ThreadListLookupMode::ScanAndRepair => false,
-        },
+        use_state_db_only: lookup_mode == ThreadListLookupMode::StateDbOnly,
         search_term: None,
     }
 }
@@ -2333,6 +2565,37 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
             .unwrap_or_default();
         return vec![line, Line::default()];
     }
+    if state.pending_accept.is_some() {
+        let ctrl_c_label = match state.launch_context {
+            SessionPickerLaunchContext::Startup => "quit",
+            SessionPickerLaunchContext::ExistingSession => "exit",
+        };
+        let hints = [
+            PickerFooterHint {
+                key: "verifying",
+                wide_label: String::from("selection"),
+                compact_label: String::from("selection"),
+                priority: 0,
+            },
+            PickerFooterHint {
+                key: "esc",
+                wide_label: String::from("cancel"),
+                compact_label: String::from("cancel"),
+                priority: 1,
+            },
+            PickerFooterHint {
+                key: "ctrl+c",
+                wide_label: ctrl_c_label.to_string(),
+                compact_label: ctrl_c_label.to_string(),
+                priority: 2,
+            },
+        ];
+        let line = fit_footer_hints(&hints, FooterHintLabelMode::Wide, width)
+            .or_else(|| fit_footer_hints(&hints, FooterHintLabelMode::Compact, width))
+            .or_else(|| fit_footer_hints(&hints, FooterHintLabelMode::KeyOnly, width))
+            .unwrap_or_default();
+        return vec![line, Line::default()];
+    }
 
     let action_label = state.action.action_label();
     let (esc_label, esc_compact_label) = if state.query.is_empty() {
@@ -2355,23 +2618,13 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
         SessionListDensity::Comfortable => "dense",
         SessionListDensity::Dense => "comfy",
     };
-    let primary_hint = if state.fast_initial_page_loaded {
-        PickerFooterHint {
-            key: "verifying",
-            wide_label: String::from("sessions"),
-            compact_label: String::from("sessions"),
-            priority: 0,
-        }
-    } else {
+    let first_row_hints = vec![
         PickerFooterHint {
             key: "enter",
             wide_label: action_label.to_string(),
             compact_label: action_label.to_string(),
             priority: 0,
-        }
-    };
-    let first_row_hints = vec![
-        primary_hint,
+        },
         PickerFooterHint {
             key: "esc",
             wide_label: esc_label.to_string(),
@@ -3422,6 +3675,24 @@ mod tests {
         })
     }
 
+    fn reconciling_picker_state() -> (PickerState, Arc<Mutex<Vec<PageLoadRequest>>>) {
+        let recorded_requests = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader = page_only_loader(move |request| {
+            request_sink.lock().unwrap().push(request);
+        });
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.initial_page_load = InitialPageLoadState::StateDbFirst;
+        (state, recorded_requests)
+    }
+
     fn make_row(path: &str, ts: &str, preview: &str) -> Row {
         let timestamp = parse_timestamp_str(ts).expect("timestamp should parse");
         Row {
@@ -3801,21 +4072,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_picker_reconciles_fast_page_and_preserves_selection() {
-        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
-        let request_sink = recorded_requests.clone();
-        let loader = page_only_loader(move |request| {
-            request_sink.lock().unwrap().push(request);
-        });
-        let mut state = PickerState::new(
-            FrameRequester::test_dummy(),
-            loader,
-            ProviderFilter::MatchDefault(String::from("openai")),
-            /*show_all*/ true,
-            /*filter_cwd*/ None,
-            SessionPickerAction::Resume,
-        );
-        state.initial_lookup_mode = ThreadListLookupMode::StateDbOnly;
-        state.reconcile_initial_page = true;
+        let (mut state, recorded_requests) = reconciling_picker_state();
 
         state.start_initial_load();
 
@@ -3895,21 +4152,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_picker_keeps_fast_page_when_reconciliation_fails() {
-        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
-        let request_sink = recorded_requests.clone();
-        let loader = page_only_loader(move |request| {
-            request_sink.lock().unwrap().push(request);
-        });
-        let mut state = PickerState::new(
-            FrameRequester::test_dummy(),
-            loader,
-            ProviderFilter::MatchDefault(String::from("openai")),
-            /*show_all*/ true,
-            /*filter_cwd*/ None,
-            SessionPickerAction::Resume,
-        );
-        state.initial_lookup_mode = ThreadListLookupMode::StateDbOnly;
-        state.reconcile_initial_page = true;
+        let (mut state, recorded_requests) = reconciling_picker_state();
 
         state.start_initial_load();
 
@@ -3967,21 +4210,7 @@ mod tests {
     }
 
     async fn assert_reconciliation_restarts_search(provisional_preview: &str) {
-        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
-        let request_sink = recorded_requests.clone();
-        let loader = page_only_loader(move |request| {
-            request_sink.lock().unwrap().push(request);
-        });
-        let mut state = PickerState::new(
-            FrameRequester::test_dummy(),
-            loader,
-            ProviderFilter::MatchDefault(String::from("openai")),
-            /*show_all*/ true,
-            /*filter_cwd*/ None,
-            SessionPickerAction::Resume,
-        );
-        state.initial_lookup_mode = ThreadListLookupMode::StateDbOnly;
-        state.reconcile_initial_page = true;
+        let (mut state, recorded_requests) = reconciling_picker_state();
 
         state.start_initial_load();
 
@@ -6156,8 +6385,14 @@ session_picker_view = "dense"
     }
 
     #[tokio::test]
-    async fn provisional_state_db_row_disables_accept_with_feedback() {
-        let loader = page_only_loader(|_| {});
+    async fn provisional_state_db_row_validates_before_accepting() {
+        let validation_requests = Arc::new(Mutex::new(Vec::new()));
+        let validation_request_sink = validation_requests.clone();
+        let loader = Arc::new(move |request| {
+            if let PickerLoadRequest::Validate { thread_id, .. } = request {
+                validation_request_sink.lock().unwrap().push(thread_id);
+            }
+        });
         let mut state = PickerState::new(
             FrameRequester::test_dummy(),
             loader,
@@ -6166,10 +6401,11 @@ session_picker_view = "dense"
             /*filter_cwd*/ None,
             SessionPickerAction::Resume,
         );
+        let thread_id = ThreadId::new();
         let row = Row {
             path: None,
             preview: String::from("provisional thread"),
-            thread_id: Some(ThreadId::new()),
+            thread_id: Some(thread_id),
             thread_name: None,
             created_at: None,
             updated_at: None,
@@ -6178,7 +6414,7 @@ session_picker_view = "dense"
         };
         state.all_rows = vec![row.clone()];
         state.filtered_rows = vec![row];
-        state.fast_initial_page_loaded = true;
+        state.initial_page_load = InitialPageLoadState::VerifyingStateDb;
 
         let selection = state
             .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -6187,16 +6423,41 @@ session_picker_view = "dense"
 
         assert!(selection.is_none());
         assert_eq!(
-            state.inline_error,
-            Some(String::from("Wait for session verification to finish"))
+            state.pending_accept,
+            Some(PendingAccept {
+                thread_id,
+                validation_token: 0,
+            })
         );
-        let footer = footer_lines_text(&state, /*width*/ 220);
-        assert!(footer.contains("verifying sessions"));
-        assert!(!footer.contains("enter resume"));
+        assert_eq!(*validation_requests.lock().unwrap(), vec![thread_id]);
+
+        let validated_path = PathBuf::from("/tmp/validated.jsonl");
+        state
+            .handle_background_event(BackgroundEvent::Validation {
+                thread_id,
+                validation_token: 0,
+                target: Ok(SessionTarget {
+                    path: Some(validated_path.clone()),
+                    thread_id,
+                }),
+            })
+            .await
+            .expect("validation should not abort the picker");
+
+        match state.accepted_selection.take() {
+            Some(SessionSelection::Resume(SessionTarget {
+                path: Some(path),
+                thread_id: selected_thread_id,
+            })) => {
+                assert_eq!(path, validated_path);
+                assert_eq!(selected_thread_id, thread_id);
+            }
+            other => panic!("unexpected selection: {other:?}"),
+        }
     }
 
-    #[test]
-    fn hint_line_snapshot_shows_session_verification() {
+    #[tokio::test]
+    async fn failed_provisional_row_validation_keeps_picker_open() {
         let loader = page_only_loader(|_| {});
         let mut state = PickerState::new(
             FrameRequester::test_dummy(),
@@ -6206,10 +6467,103 @@ session_picker_view = "dense"
             /*filter_cwd*/ None,
             SessionPickerAction::Resume,
         );
-        state.fast_initial_page_loaded = true;
+        let thread_id = ThreadId::new();
+        state.pending_accept = Some(PendingAccept {
+            thread_id,
+            validation_token: 7,
+        });
+
+        state
+            .handle_background_event(BackgroundEvent::Validation {
+                thread_id,
+                validation_token: 7,
+                target: Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "stale state DB row",
+                )),
+            })
+            .await
+            .expect("validation failure should not abort the picker");
+
+        assert_eq!(state.pending_accept, None);
+        assert!(state.accepted_selection.is_none());
+        assert_eq!(
+            state.inline_error,
+            Some(String::from("Selected session is no longer available"))
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_provisional_row_validation_is_ignored() {
+        let loader = page_only_loader(|_| {});
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        let thread_id = ThreadId::new();
+        let pending_accept = PendingAccept {
+            thread_id,
+            validation_token: 2,
+        };
+        state.pending_accept = Some(pending_accept);
+
+        state
+            .handle_background_event(BackgroundEvent::Validation {
+                thread_id,
+                validation_token: 1,
+                target: Ok(SessionTarget {
+                    path: Some(PathBuf::from("/tmp/stale.jsonl")),
+                    thread_id,
+                }),
+            })
+            .await
+            .expect("stale validation should not abort the picker");
+
+        assert_eq!(state.pending_accept, Some(pending_accept));
+        assert!(state.accepted_selection.is_none());
+    }
+
+    #[test]
+    fn hint_line_snapshot_allows_accept_during_session_verification() {
+        let loader = page_only_loader(|_| {});
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.initial_page_load = InitialPageLoadState::VerifyingStateDb;
 
         assert_snapshot!(
             "resume_picker_footer_verifying",
+            footer_snapshot(&state, /*width*/ 220, /*list_height*/ 20)
+        );
+    }
+
+    #[test]
+    fn hint_line_snapshot_shows_selected_session_validation() {
+        let loader = page_only_loader(|_| {});
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.pending_accept = Some(PendingAccept {
+            thread_id: ThreadId::new(),
+            validation_token: 0,
+        });
+
+        assert_snapshot!(
+            "resume_picker_footer_validating_selection",
             footer_snapshot(&state, /*width*/ 220, /*list_height*/ 20)
         );
     }
@@ -6245,6 +6599,66 @@ session_picker_view = "dense"
         assert_eq!(row.path, None);
         assert_eq!(row.thread_id, Some(thread_id));
         assert_eq!(row.thread_name, Some(String::from("Named thread")));
+    }
+
+    #[test]
+    fn selected_session_validation_uses_authoritative_metadata() {
+        let thread_id = ThreadId::new();
+        let thread = Thread {
+            id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: String::from("session"),
+            ephemeral: false,
+            model_provider: String::from("openai"),
+            created_at: 1,
+            updated_at: 2,
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: Some(PathBuf::from("/tmp/repaired.jsonl")),
+            cwd: test_path_buf("/tmp/current").abs(),
+            cli_version: String::from("0.0.0"),
+            source: SessionSource::Cli,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        };
+
+        let target = validated_session_target(
+            thread.clone(),
+            thread_id,
+            Some(Path::new("/tmp/current")),
+            &ProviderFilter::MatchDefault(String::from("openai")),
+            /*include_non_interactive*/ false,
+            "",
+        )
+        .expect("authoritative metadata should match");
+        assert_eq!(target.path, Some(PathBuf::from("/tmp/repaired.jsonl")));
+
+        let error = validated_session_target(
+            thread.clone(),
+            thread_id,
+            Some(Path::new("/tmp/stale")),
+            &ProviderFilter::MatchDefault(String::from("openai")),
+            /*include_non_interactive*/ false,
+            "",
+        )
+        .expect_err("stale cwd metadata should be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+
+        let error = validated_session_target(
+            thread,
+            thread_id,
+            Some(Path::new("/tmp/current")),
+            &ProviderFilter::MatchDefault(String::from("openai")),
+            /*include_non_interactive*/ false,
+            "missing query",
+        )
+        .expect_err("stale search metadata should be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
