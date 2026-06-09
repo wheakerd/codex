@@ -1394,11 +1394,12 @@ impl PickerState {
                     }
                     PageLoadPhase::Reconciled => {
                         self.pagination.loading = LoadingState::Idle;
-                        match page {
+                        let search_needs_reevaluation = match page {
                             Ok(page) => {
                                 self.fast_initial_page_loaded = false;
                                 self.pagination.lookup_mode = ThreadListLookupMode::ScanAndRepair;
                                 self.replace_with_page(page);
+                                true
                             }
                             Err(err) if self.fast_initial_page_loaded => {
                                 warn!(
@@ -1407,12 +1408,17 @@ impl PickerState {
                                 );
                                 self.fast_initial_page_loaded = false;
                                 self.request_frame();
+                                false
                             }
                             Err(err) => return Err(color_eyre::Report::from(err)),
-                        }
+                        };
                         self.complete_pending_page_down();
-                        let completed_token = pending.search_token.or(search_token);
-                        self.continue_search_if_token_matches(completed_token);
+                        if search_needs_reevaluation {
+                            self.reevaluate_search();
+                        } else {
+                            let completed_token = pending.search_token.or(search_token);
+                            self.continue_search_if_token_matches(completed_token);
+                        }
                     }
                     PageLoadPhase::Incremental => {
                         self.pagination.loading = LoadingState::Idle;
@@ -1597,15 +1603,15 @@ impl PickerState {
         self.query = new_query;
         self.selected = 0;
         self.apply_filter();
-        if self.query.is_empty() {
-            self.search_state = SearchState::Idle;
-            return;
-        }
-        if !self.filtered_rows.is_empty() {
-            self.search_state = SearchState::Idle;
-            return;
-        }
-        if self.pagination.reached_scan_cap || self.pagination.next_cursor.is_none() {
+        self.reevaluate_search();
+    }
+
+    fn reevaluate_search(&mut self) {
+        if self.query.is_empty()
+            || !self.filtered_rows.is_empty()
+            || self.pagination.reached_scan_cap
+            || self.pagination.next_cursor.is_none()
+        {
             self.search_state = SearchState::Idle;
             return;
         }
@@ -3945,6 +3951,88 @@ mod tests {
             requests[1].cursor.as_ref(),
             Some(PageCursor::AppServer(cursor)) if cursor == "db-cursor"
         ));
+    }
+
+    async fn assert_reconciliation_restarts_search(provisional_preview: &str) {
+        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader = page_only_loader(move |request| {
+            request_sink.lock().unwrap().push(request);
+        });
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.initial_lookup_mode = ThreadListLookupMode::StateDbOnly;
+        state.reconcile_initial_page = true;
+
+        state.start_initial_load();
+
+        let initial_request = recorded_requests.lock().unwrap()[0].clone();
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: initial_request.request_token,
+                search_token: initial_request.search_token,
+                phase: PageLoadPhase::Fast,
+                page: Ok(page(
+                    vec![make_row(
+                        "/tmp/provisional.jsonl",
+                        "2025-01-03T00:00:00Z",
+                        provisional_preview,
+                    )],
+                    /*next_cursor*/ None,
+                    /*num_scanned_files*/ 1,
+                    /*reached_scan_cap*/ false,
+                )),
+            })
+            .await
+            .expect("fast page should load");
+        state.set_query(String::from("target"));
+        assert!(!state.search_state.is_active());
+
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: initial_request.request_token,
+                search_token: initial_request.search_token,
+                phase: PageLoadPhase::Reconciled,
+                page: Ok(page(
+                    vec![make_row(
+                        "/tmp/reconciled.jsonl",
+                        "2025-01-02T00:00:00Z",
+                        "other",
+                    )],
+                    Some("scan-cursor"),
+                    /*num_scanned_files*/ 2,
+                    /*reached_scan_cap*/ false,
+                )),
+            })
+            .await
+            .expect("reconciled page should load");
+
+        assert!(state.filtered_rows.is_empty());
+        assert!(state.search_state.is_active());
+        let requests = recorded_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].lookup_mode, ThreadListLookupMode::ScanAndRepair);
+        assert!(requests[1].search_token.is_some());
+        assert!(matches!(
+            requests[1].cursor.as_ref(),
+            Some(PageCursor::AppServer(cursor)) if cursor == "scan-cursor"
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_restarts_search_when_provisional_match_disappears() {
+        assert_reconciliation_restarts_search("target").await;
+    }
+
+    #[tokio::test]
+    async fn reconciliation_restarts_search_when_authoritative_page_adds_cursor() {
+        assert_reconciliation_restarts_search("other").await;
     }
 
     #[test]
