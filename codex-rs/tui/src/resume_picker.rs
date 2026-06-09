@@ -145,6 +145,8 @@ struct PageLoadRequest {
     cwd_filter: Option<PathBuf>,
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
+    lookup_mode: ThreadListLookupMode,
+    reconcile_after_load: bool,
 }
 
 enum PickerLoadRequest {
@@ -243,6 +245,7 @@ enum BackgroundEvent {
     Page {
         request_token: usize,
         search_token: Option<usize>,
+        phase: PageLoadPhase,
         page: std::io::Result<PickerPage>,
     },
     Preview {
@@ -253,6 +256,13 @@ enum BackgroundEvent {
         thread_id: ThreadId,
         transcript: std::io::Result<TranscriptCells>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PageLoadPhase {
+    Fast,
+    Reconciled,
+    Incremental,
 }
 
 #[derive(Clone)]
@@ -283,6 +293,14 @@ struct SessionPickerRunOptions {
     view_persistence: Option<SessionPickerViewPersistence>,
     pager_keymap: PagerKeymap,
     list_keymap: ListKeymap,
+    initial_lookup_mode: ThreadListLookupMode,
+    reconcile_initial_page: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ThreadListLookupMode {
+    StateDbOnly,
+    ScanAndRepair,
 }
 
 /// Interactive session picker that lists app-server threads with simple search,
@@ -369,6 +387,12 @@ async fn run_resume_picker_with_launch_context(
         }),
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
+        initial_lookup_mode: if uses_remote_workspace {
+            ThreadListLookupMode::ScanAndRepair
+        } else {
+            ThreadListLookupMode::StateDbOnly
+        },
+        reconcile_initial_page: !uses_remote_workspace,
     };
     run_session_picker_with_loader(
         tui,
@@ -414,6 +438,12 @@ pub async fn run_fork_picker_with_app_server(
         }),
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
+        initial_lookup_mode: if uses_remote_workspace {
+            ThreadListLookupMode::ScanAndRepair
+        } else {
+            ThreadListLookupMode::StateDbOnly
+        },
+        reconcile_initial_page: !uses_remote_workspace,
     };
     run_session_picker_with_loader(
         tui,
@@ -450,6 +480,8 @@ async fn run_session_picker_with_loader(
     state.pager_keymap = options.pager_keymap;
     state.list_keymap = options.list_keymap;
     state.launch_context = options.launch_context;
+    state.initial_lookup_mode = options.initial_lookup_mode;
+    state.reconcile_initial_page = options.reconcile_initial_page;
     state.start_initial_load();
     state.request_frame();
 
@@ -560,21 +592,63 @@ fn spawn_app_server_page_loader(
         while let Some(request) = request_rx.recv().await {
             match request {
                 PickerLoadRequest::Page(request) => {
-                    let cursor = request.cursor.map(|PageCursor::AppServer(cursor)| cursor);
+                    let cursor = request
+                        .cursor
+                        .clone()
+                        .map(|PageCursor::AppServer(cursor)| cursor);
                     let page = load_app_server_page(
                         &mut app_server,
                         cursor,
                         request.cwd_filter.as_deref(),
-                        request.provider_filter,
+                        request.provider_filter.clone(),
                         request.sort_key,
                         include_non_interactive,
+                        request.lookup_mode,
                     )
                     .await;
-                    let _ = bg_tx.send(BackgroundEvent::Page {
-                        request_token: request.request_token,
-                        search_token: request.search_token,
-                        page,
-                    });
+                    if request.reconcile_after_load {
+                        match page {
+                            Ok(page) => {
+                                let _ = bg_tx.send(BackgroundEvent::Page {
+                                    request_token: request.request_token,
+                                    search_token: request.search_token,
+                                    phase: PageLoadPhase::Fast,
+                                    page: Ok(page),
+                                });
+                            }
+                            Err(err) => {
+                                warn!(
+                                    %err,
+                                    "State DB picker lookup failed; falling back to scan-and-repair"
+                                );
+                            }
+                        }
+
+                        let cursor = request.cursor.map(|PageCursor::AppServer(cursor)| cursor);
+                        let page = load_app_server_page(
+                            &mut app_server,
+                            cursor,
+                            request.cwd_filter.as_deref(),
+                            request.provider_filter,
+                            request.sort_key,
+                            include_non_interactive,
+                            ThreadListLookupMode::ScanAndRepair,
+                        )
+                        .await;
+                        let _ = bg_tx.send(BackgroundEvent::Page {
+                            request_token: request.request_token,
+                            search_token: request.search_token,
+                            phase: PageLoadPhase::Reconciled,
+                            page,
+                        });
+                    } else {
+                        let _ = bg_tx.send(BackgroundEvent::Page {
+                            request_token: request.request_token,
+                            search_token: request.search_token,
+                            phase: PageLoadPhase::Incremental,
+                            page,
+                        });
+                    }
                 }
                 PickerLoadRequest::Preview { thread_id } => {
                     let preview = load_transcript_preview(&mut app_server, thread_id).await;
@@ -667,6 +741,9 @@ struct PickerState {
     overlay: Option<Overlay>,
     pager_keymap: PagerKeymap,
     list_keymap: ListKeymap,
+    initial_lookup_mode: ThreadListLookupMode,
+    reconcile_initial_page: bool,
+    fast_initial_page_loaded: bool,
 }
 
 struct PaginationState {
@@ -674,6 +751,7 @@ struct PaginationState {
     num_scanned_files: usize,
     reached_scan_cap: bool,
     loading: LoadingState,
+    lookup_mode: ThreadListLookupMode,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -737,6 +815,7 @@ async fn load_app_server_page(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    lookup_mode: ThreadListLookupMode,
 ) -> std::io::Result<PickerPage> {
     let response = app_server
         .thread_list(thread_list_params(
@@ -745,6 +824,7 @@ async fn load_app_server_page(
             provider_filter,
             sort_key,
             include_non_interactive,
+            lookup_mode,
         ))
         .await
         .map_err(std::io::Error::other)?;
@@ -907,6 +987,7 @@ impl PickerState {
                 num_scanned_files: 0,
                 reached_scan_cap: false,
                 loading: LoadingState::Idle,
+                lookup_mode: ThreadListLookupMode::ScanAndRepair,
             },
             all_rows: Vec::new(),
             filtered_rows: Vec::new(),
@@ -941,6 +1022,9 @@ impl PickerState {
             overlay: None,
             pager_keymap: RuntimeKeymap::defaults().pager,
             list_keymap: RuntimeKeymap::defaults().list,
+            initial_lookup_mode: ThreadListLookupMode::ScanAndRepair,
+            reconcile_initial_page: false,
+            fast_initial_page_loaded: false,
         }
     }
 
@@ -1246,6 +1330,8 @@ impl PickerState {
     fn start_initial_load(&mut self) {
         self.relative_time_reference = Some(Utc::now());
         self.reset_pagination();
+        self.pagination.lookup_mode = self.initial_lookup_mode;
+        self.fast_initial_page_loaded = false;
         self.all_rows.clear();
         self.filtered_rows.clear();
         self.seen_rows.clear();
@@ -1276,6 +1362,8 @@ impl PickerState {
             cwd_filter: self.active_cwd_filter(),
             provider_filter: self.provider_filter.clone(),
             sort_key: self.sort_key,
+            lookup_mode: self.initial_lookup_mode,
+            reconcile_after_load: self.reconcile_initial_page,
         }));
     }
 
@@ -1284,6 +1372,7 @@ impl PickerState {
             BackgroundEvent::Page {
                 request_token,
                 search_token,
+                phase,
                 page,
             } => {
                 let pending = match self.pagination.loading {
@@ -1293,12 +1382,44 @@ impl PickerState {
                 if pending.request_token != request_token {
                     return Ok(());
                 }
-                self.pagination.loading = LoadingState::Idle;
-                let page = page.map_err(color_eyre::Report::from)?;
-                self.ingest_page(page);
-                self.complete_pending_page_down();
-                let completed_token = pending.search_token.or(search_token);
-                self.continue_search_if_token_matches(completed_token);
+                match phase {
+                    PageLoadPhase::Fast => {
+                        let page = page.map_err(color_eyre::Report::from)?;
+                        self.fast_initial_page_loaded = true;
+                        self.pagination.lookup_mode = ThreadListLookupMode::StateDbOnly;
+                        self.replace_with_page(page);
+                    }
+                    PageLoadPhase::Reconciled => {
+                        self.pagination.loading = LoadingState::Idle;
+                        match page {
+                            Ok(page) => {
+                                self.fast_initial_page_loaded = false;
+                                self.pagination.lookup_mode = ThreadListLookupMode::ScanAndRepair;
+                                self.replace_with_page(page);
+                            }
+                            Err(err) if self.fast_initial_page_loaded => {
+                                warn!(
+                                    %err,
+                                    "Session picker reconciliation failed; keeping State DB results"
+                                );
+                                self.fast_initial_page_loaded = false;
+                                self.request_frame();
+                            }
+                            Err(err) => return Err(color_eyre::Report::from(err)),
+                        }
+                        self.complete_pending_page_down();
+                        let completed_token = pending.search_token.or(search_token);
+                        self.continue_search_if_token_matches(completed_token);
+                    }
+                    PageLoadPhase::Incremental => {
+                        self.pagination.loading = LoadingState::Idle;
+                        let page = page.map_err(color_eyre::Report::from)?;
+                        self.ingest_page(page);
+                        self.complete_pending_page_down();
+                        let completed_token = pending.search_token.or(search_token);
+                        self.continue_search_if_token_matches(completed_token);
+                    }
+                }
             }
             BackgroundEvent::Preview { thread_id, preview } => {
                 self.transcript_previews.insert(
@@ -1343,7 +1464,45 @@ impl PickerState {
         self.pagination.num_scanned_files = 0;
         self.pagination.reached_scan_cap = false;
         self.pagination.loading = LoadingState::Idle;
+        self.pagination.lookup_mode = ThreadListLookupMode::ScanAndRepair;
         self.frozen_footer_percent = None;
+    }
+
+    fn replace_with_page(&mut self, page: PickerPage) {
+        let selected_key = self
+            .filtered_rows
+            .get(self.selected)
+            .and_then(Row::seen_key);
+        let selected_index = self.selected;
+
+        self.pagination.next_cursor = page.next_cursor;
+        self.pagination.num_scanned_files = page.num_scanned_files;
+        self.pagination.reached_scan_cap = page.reached_scan_cap;
+        self.frozen_footer_percent = None;
+        self.all_rows.clear();
+        self.filtered_rows.clear();
+        self.seen_rows.clear();
+
+        for row in page.rows {
+            if let Some(seen_key) = row.seen_key() {
+                if self.seen_rows.insert(seen_key) {
+                    self.all_rows.push(row);
+                }
+            } else {
+                self.all_rows.push(row);
+            }
+        }
+
+        self.apply_filter();
+        self.selected = selected_key
+            .and_then(|selected_key| {
+                self.filtered_rows
+                    .iter()
+                    .position(|row| row.seen_key().as_ref() == Some(&selected_key))
+            })
+            .unwrap_or_else(|| selected_index.min(self.filtered_rows.len().saturating_sub(1)));
+        self.ensure_selected_visible();
+        self.request_frame();
     }
 
     fn ingest_page(&mut self, page: PickerPage) {
@@ -1586,6 +1745,8 @@ impl PickerState {
             cwd_filter: self.active_cwd_filter(),
             provider_filter: self.provider_filter.clone(),
             sort_key: self.sort_key,
+            lookup_mode: self.pagination.lookup_mode,
+            reconcile_after_load: false,
         }));
     }
 
@@ -1809,6 +1970,7 @@ fn thread_list_params(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    lookup_mode: ThreadListLookupMode,
 ) -> ThreadListParams {
     ThreadListParams {
         cursor,
@@ -1822,7 +1984,10 @@ fn thread_list_params(
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
-        use_state_db_only: false,
+        use_state_db_only: match lookup_mode {
+            ThreadListLookupMode::StateDbOnly => true,
+            ThreadListLookupMode::ScanAndRepair => false,
+        },
         search_term: None,
     }
 }
@@ -3311,12 +3476,14 @@ mod tests {
             ProviderFilter::MatchDefault(String::from("openai")),
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            ThreadListLookupMode::StateDbOnly,
         );
 
         assert_eq!(
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
+        assert!(params.use_state_db_only);
     }
 
     #[test]
@@ -3536,6 +3703,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            ThreadListLookupMode::ScanAndRepair,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
@@ -3548,6 +3716,7 @@ mod tests {
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("repo/on/server")))
         );
+        assert!(!params.use_state_db_only);
     }
 
     #[test]
@@ -3558,6 +3727,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ true,
+            ThreadListLookupMode::ScanAndRepair,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
@@ -3605,6 +3775,173 @@ mod tests {
         };
 
         assert!(state.row_matches_filter(&row));
+    }
+
+    #[tokio::test]
+    async fn local_picker_reconciles_fast_page_and_preserves_selection() {
+        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader = page_only_loader(move |request| {
+            request_sink.lock().unwrap().push(request);
+        });
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.initial_lookup_mode = ThreadListLookupMode::StateDbOnly;
+        state.reconcile_initial_page = true;
+
+        state.start_initial_load();
+
+        let request = recorded_requests.lock().unwrap()[0].clone();
+        assert_eq!(request.lookup_mode, ThreadListLookupMode::StateDbOnly);
+        assert!(request.reconcile_after_load);
+
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: request.request_token,
+                search_token: request.search_token,
+                phase: PageLoadPhase::Fast,
+                page: Ok(page(
+                    vec![
+                        make_row("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "a"),
+                        make_row("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "b"),
+                    ],
+                    Some("db-cursor"),
+                    /*num_scanned_files*/ 2,
+                    /*reached_scan_cap*/ false,
+                )),
+            })
+            .await
+            .expect("fast page should load");
+
+        assert!(state.pagination.loading.is_pending());
+        state.selected = 1;
+        state.load_more_if_needed(LoadTrigger::Scroll);
+        assert_eq!(recorded_requests.lock().unwrap().len(), 1);
+
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: request.request_token,
+                search_token: request.search_token,
+                phase: PageLoadPhase::Reconciled,
+                page: Ok(page(
+                    vec![
+                        make_row("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "b repaired"),
+                        make_row("/tmp/c.jsonl", "2025-01-01T00:00:00Z", "c"),
+                    ],
+                    Some("scan-cursor"),
+                    /*num_scanned_files*/ 3,
+                    /*reached_scan_cap*/ false,
+                )),
+            })
+            .await
+            .expect("reconciled page should load");
+
+        assert!(!state.pagination.loading.is_pending());
+        assert_eq!(
+            state.pagination.lookup_mode,
+            ThreadListLookupMode::ScanAndRepair
+        );
+        assert_eq!(state.selected, 0);
+        assert_eq!(
+            state
+                .filtered_rows
+                .iter()
+                .map(|row| row.preview.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b repaired", "c"]
+        );
+        assert!(matches!(
+            state.pagination.next_cursor.as_ref(),
+            Some(PageCursor::AppServer(cursor)) if cursor == "scan-cursor"
+        ));
+
+        state.load_more_if_needed(LoadTrigger::Scroll);
+        let requests = recorded_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].lookup_mode, ThreadListLookupMode::ScanAndRepair);
+        assert!(matches!(
+            requests[1].cursor.as_ref(),
+            Some(PageCursor::AppServer(cursor)) if cursor == "scan-cursor"
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_picker_keeps_fast_page_when_reconciliation_fails() {
+        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader = page_only_loader(move |request| {
+            request_sink.lock().unwrap().push(request);
+        });
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.initial_lookup_mode = ThreadListLookupMode::StateDbOnly;
+        state.reconcile_initial_page = true;
+
+        state.start_initial_load();
+
+        let request = recorded_requests.lock().unwrap()[0].clone();
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: request.request_token,
+                search_token: request.search_token,
+                phase: PageLoadPhase::Fast,
+                page: Ok(page(
+                    vec![make_row("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "a")],
+                    Some("db-cursor"),
+                    /*num_scanned_files*/ 1,
+                    /*reached_scan_cap*/ false,
+                )),
+            })
+            .await
+            .expect("fast page should load");
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: request.request_token,
+                search_token: request.search_token,
+                phase: PageLoadPhase::Reconciled,
+                page: Err(std::io::Error::other("scan failed")),
+            })
+            .await
+            .expect("fast page should remain usable");
+
+        assert!(!state.pagination.loading.is_pending());
+        assert_eq!(
+            state.pagination.lookup_mode,
+            ThreadListLookupMode::StateDbOnly
+        );
+        assert_eq!(
+            state
+                .filtered_rows
+                .iter()
+                .map(|row| row.preview.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"]
+        );
+        assert!(matches!(
+            state.pagination.next_cursor.as_ref(),
+            Some(PageCursor::AppServer(cursor)) if cursor == "db-cursor"
+        ));
+
+        state.load_more_if_needed(LoadTrigger::Scroll);
+        let requests = recorded_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].lookup_mode, ThreadListLookupMode::StateDbOnly);
+        assert!(matches!(
+            requests[1].cursor.as_ref(),
+            Some(PageCursor::AppServer(cursor)) if cursor == "db-cursor"
+        ));
     }
 
     #[test]
@@ -6124,6 +6461,7 @@ session_picker_view = "dense"
             .handle_background_event(BackgroundEvent::Page {
                 request_token: first_request.request_token,
                 search_token: first_request.search_token,
+                phase: PageLoadPhase::Incremental,
                 page: Ok(page(
                     vec![make_row("/tmp/beta.jsonl", "2025-01-02T00:00:00Z", "beta")],
                     Some("2025-01-03T00:00:00Z"),
@@ -6146,6 +6484,7 @@ session_picker_view = "dense"
             .handle_background_event(BackgroundEvent::Page {
                 request_token: second_request.request_token,
                 search_token: second_request.search_token,
+                phase: PageLoadPhase::Incremental,
                 page: Ok(page(
                     vec![make_row(
                         "/tmp/match.jsonl",
@@ -6175,6 +6514,7 @@ session_picker_view = "dense"
             .handle_background_event(BackgroundEvent::Page {
                 request_token: second_request.request_token,
                 search_token: second_request.search_token,
+                phase: PageLoadPhase::Incremental,
                 page: Ok(page(
                     Vec::new(),
                     /*next_cursor*/ None,
@@ -6190,6 +6530,7 @@ session_picker_view = "dense"
             .handle_background_event(BackgroundEvent::Page {
                 request_token: active_request.request_token,
                 search_token: active_request.search_token,
+                phase: PageLoadPhase::Incremental,
                 page: Ok(page(
                     Vec::new(),
                     /*next_cursor*/ None,
