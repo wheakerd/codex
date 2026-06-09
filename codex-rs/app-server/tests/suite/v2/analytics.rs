@@ -125,12 +125,26 @@ pub(crate) async fn wait_for_analytics_event(
     read_timeout: Duration,
     event_type: &str,
 ) -> Result<Value> {
+    let events = wait_for_analytics_events(server, read_timeout, event_type, 1).await?;
+    events
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("wait_for_analytics_events returned no requested event"))
+}
+
+pub(crate) async fn wait_for_analytics_events(
+    server: &MockServer,
+    read_timeout: Duration,
+    event_type: &str,
+    expected_len: usize,
+) -> Result<Vec<Value>> {
     timeout(read_timeout, async {
         loop {
             let Some(requests) = server.received_requests().await else {
                 tokio::time::sleep(Duration::from_millis(25)).await;
                 continue;
             };
+            let mut matching_events = Vec::new();
             for request in &requests {
                 if request.method != "POST"
                     || request.url.path() != "/codex/analytics-events/events"
@@ -142,12 +156,15 @@ pub(crate) async fn wait_for_analytics_event(
                 let Some(events) = payload["events"].as_array() else {
                     continue;
                 };
-                if let Some(event) = events
-                    .iter()
-                    .find(|event| event["event_type"] == event_type)
-                {
-                    return Ok::<Value, anyhow::Error>(event.clone());
-                }
+                matching_events.extend(
+                    events
+                        .iter()
+                        .filter(|event| event["event_type"] == event_type)
+                        .cloned(),
+                );
+            }
+            if matching_events.len() >= expected_len {
+                return Ok::<Vec<Value>, anyhow::Error>(matching_events);
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
