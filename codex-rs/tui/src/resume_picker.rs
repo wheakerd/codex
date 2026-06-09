@@ -1189,6 +1189,9 @@ impl PickerState {
                 self.toggle_density().await;
             }
             _ if self.list_keymap.accept.is_pressed(key) => {
+                if self.fast_initial_page_loaded {
+                    return Ok(None);
+                }
                 if let Some(row) = self.filtered_rows.get(self.selected) {
                     let path = row.path.clone();
                     let thread_id = match row.thread_id {
@@ -6049,6 +6052,39 @@ session_picker_view = "dense"
             })) => assert_eq!(selected_thread_id, thread_id),
             other => panic!("unexpected selection: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn enter_does_not_accept_provisional_state_db_row() {
+        let loader = page_only_loader(|_| {});
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        let row = Row {
+            path: None,
+            preview: String::from("provisional thread"),
+            thread_id: Some(ThreadId::new()),
+            thread_name: None,
+            created_at: None,
+            updated_at: None,
+            cwd: None,
+            git_branch: None,
+        };
+        state.all_rows = vec![row.clone()];
+        state.filtered_rows = vec![row];
+        state.fast_initial_page_loaded = true;
+
+        let selection = state
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("enter should not abort the picker");
+
+        assert!(selection.is_none());
     }
 
     #[test]
