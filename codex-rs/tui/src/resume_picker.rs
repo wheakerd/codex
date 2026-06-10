@@ -982,7 +982,7 @@ async fn validate_session_target(
             request_id: RequestId::String(format!("resume-picker-validation-{}", Uuid::new_v4())),
             params: ThreadReadParams {
                 thread_id: thread_id.to_string(),
-                include_turns: true,
+                include_turns: false,
             },
         })
         .await
