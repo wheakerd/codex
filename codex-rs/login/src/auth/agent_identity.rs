@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
+use std::future::Future;
+
 use codex_agent_identity::AgentIdentityKey;
 use codex_agent_identity::agent_identity_authapi_base_url_from_chatgpt_base_url;
+use codex_agent_identity::is_retryable_registration_error;
 use codex_agent_identity::register_agent_task;
 use codex_protocol::account::PlanType as AccountPlanType;
+use thiserror::Error;
 use tokio::sync::OnceCell;
 
 use crate::default_client::build_reqwest_client;
@@ -11,8 +15,20 @@ use crate::default_client::build_reqwest_client;
 use super::storage::AgentIdentityAuthRecord;
 
 const DEFAULT_CHATGPT_BACKEND_BASE_URL: &str = "https://chatgpt.com/backend-api";
+pub(super) const MAX_AGENT_IDENTITY_BOOTSTRAP_ATTEMPTS: usize = 3;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("retryable agent identity registration failure: {message}")]
+pub(super) struct RetryableAgentIdentityRegistrationError {
+    message: String,
+}
+
+impl RetryableAgentIdentityRegistrationError {
+    pub(super) fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
 pub struct AgentIdentityAuth {
     record: AgentIdentityAuthRecord,
     run_task_id: Arc<OnceCell<String>>,
@@ -27,11 +43,24 @@ impl Clone for AgentIdentityAuth {
     }
 }
 
+impl std::fmt::Debug for AgentIdentityAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentIdentityAuth")
+            .field("record", &self.record)
+            .field("run_task_id", &self.run_task_id.get())
+            .finish()
+    }
+}
+
 impl AgentIdentityAuth {
     pub fn new(record: AgentIdentityAuthRecord) -> Self {
+        let run_task_id = Arc::new(OnceCell::new());
+        if let Some(task_id) = record.task_id.as_ref() {
+            let _ = run_task_id.set(task_id.clone());
+        }
         Self {
             record,
-            run_task_id: Arc::new(OnceCell::new()),
+            run_task_id,
         }
     }
 
@@ -48,14 +77,7 @@ impl AgentIdentityAuth {
     }
 
     pub async fn register_task(&self, chatgpt_base_url: Option<String>) -> std::io::Result<String> {
-        let authapi_base_url = agent_identity_authapi_base_url_from_chatgpt_base_url(
-            chatgpt_base_url
-                .as_deref()
-                .unwrap_or(DEFAULT_CHATGPT_BACKEND_BASE_URL),
-        );
-        register_agent_task(&build_reqwest_client(), &authapi_base_url, self.key())
-            .await
-            .map_err(std::io::Error::other)
+        register_task_for_record(&self.record, chatgpt_base_url).await
     }
 
     pub fn account_id(&self) -> &str {
@@ -77,18 +99,100 @@ impl AgentIdentityAuth {
     pub fn is_fedramp_account(&self) -> bool {
         self.record.chatgpt_account_is_fedramp
     }
-    fn key(&self) -> AgentIdentityKey<'_> {
-        AgentIdentityKey {
-            agent_runtime_id: &self.record.agent_runtime_id,
-            private_key_pkcs8_base64: &self.record.agent_private_key,
-        }
-    }
-
     async fn run_task_id_for(&self, chatgpt_base_url: Option<String>) -> std::io::Result<String> {
         self.run_task_id
-            .get_or_try_init(|| async { self.register_task(chatgpt_base_url).await })
+            .get_or_try_init(|| async {
+                let task_id = self.register_task(chatgpt_base_url).await?;
+                Ok(task_id)
+            })
             .await
             .cloned()
+    }
+}
+
+pub(super) async fn record_with_run_task(
+    mut record: AgentIdentityAuthRecord,
+    chatgpt_base_url: Option<String>,
+) -> std::io::Result<AgentIdentityAuthRecord> {
+    if record.task_id.is_none() {
+        record.task_id =
+            Some(register_task_for_record_with_retries(&record, chatgpt_base_url).await?);
+    }
+    Ok(record)
+}
+
+pub(super) fn is_retryable_io_registration_error(err: &std::io::Error) -> bool {
+    err.get_ref().is_some_and(
+        <dyn std::error::Error + std::marker::Send + std::marker::Sync + 'static>::is::<
+            RetryableAgentIdentityRegistrationError,
+        >,
+    )
+}
+
+pub(super) async fn retry_registration<T, F, Fut>(mut operation: F) -> std::io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::io::Result<T>>,
+{
+    let mut attempt = 1;
+    loop {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(err)
+                if attempt < MAX_AGENT_IDENTITY_BOOTSTRAP_ATTEMPTS
+                    && is_retryable_io_registration_error(&err) =>
+            {
+                tracing::warn!(
+                    attempt,
+                    max_attempts = MAX_AGENT_IDENTITY_BOOTSTRAP_ATTEMPTS,
+                    error = %err,
+                    "agent identity registration attempt failed; retrying"
+                );
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn register_task_for_record_with_retries(
+    record: &AgentIdentityAuthRecord,
+    chatgpt_base_url: Option<String>,
+) -> std::io::Result<String> {
+    retry_registration(async || register_task_for_record(record, chatgpt_base_url.clone()).await)
+        .await
+}
+
+async fn register_task_for_record(
+    record: &AgentIdentityAuthRecord,
+    chatgpt_base_url: Option<String>,
+) -> std::io::Result<String> {
+    let authapi_base_url = agent_identity_authapi_base_url_from_chatgpt_base_url(
+        chatgpt_base_url
+            .as_deref()
+            .unwrap_or(DEFAULT_CHATGPT_BACKEND_BASE_URL),
+    );
+    register_agent_task(
+        &build_reqwest_client(),
+        &authapi_base_url,
+        key_for_record(record),
+    )
+    .await
+    .map_err(|err| {
+        if is_retryable_registration_error(&err) {
+            std::io::Error::other(RetryableAgentIdentityRegistrationError::new(
+                err.to_string(),
+            ))
+        } else {
+            std::io::Error::other(err)
+        }
+    })
+}
+
+fn key_for_record(record: &AgentIdentityAuthRecord) -> AgentIdentityKey<'_> {
+    AgentIdentityKey {
+        agent_runtime_id: &record.agent_runtime_id,
+        private_key_pkcs8_base64: &record.agent_private_key,
     }
 }
 
@@ -118,6 +222,7 @@ mod tests {
             email: "agent@example.com".to_string(),
             plan_type: AccountPlanType::Plus,
             chatgpt_account_is_fedramp: false,
+            task_id: None,
         }
     }
 
