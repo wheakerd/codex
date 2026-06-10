@@ -165,8 +165,7 @@ enum PickerLoadRequest {
         thread_id: ThreadId,
     },
     Validate {
-        thread_id: ThreadId,
-        validation_token: usize,
+        pending_accept: PendingAccept,
         cwd_filter: Option<PathBuf>,
         provider_filter: ProviderFilter,
         query: String,
@@ -275,8 +274,7 @@ enum BackgroundEvent {
         transcript: std::io::Result<TranscriptCells>,
     },
     Validation {
-        thread_id: ThreadId,
-        validation_token: usize,
+        pending_accept: PendingAccept,
         target: std::io::Result<SessionTarget>,
     },
 }
@@ -554,8 +552,7 @@ async fn run_session_picker_with_loader(
                 }
             }
             Some(event) = background_events.next() => {
-                state.handle_background_event(event).await?;
-                if let Some(selection) = state.accepted_selection.take() {
+                if let Some(selection) = state.handle_background_event(event).await? {
                     return Ok(selection);
                 }
             }
@@ -715,8 +712,7 @@ fn spawn_app_server_page_loader(
 
     Arc::new(move |request: PickerLoadRequest| match request {
         PickerLoadRequest::Validate {
-            thread_id,
-            validation_token,
+            pending_accept,
             cwd_filter,
             provider_filter,
             query,
@@ -726,7 +722,7 @@ fn spawn_app_server_page_loader(
             tokio::spawn(async move {
                 let target = validate_session_target(
                     request_handle,
-                    thread_id,
+                    pending_accept.thread_id,
                     cwd_filter.as_deref(),
                     provider_filter,
                     include_non_interactive,
@@ -734,8 +730,7 @@ fn spawn_app_server_page_loader(
                 )
                 .await;
                 let _ = bg_tx.send(BackgroundEvent::Validation {
-                    thread_id,
-                    validation_token,
+                    pending_accept,
                     target,
                 });
             });
@@ -787,7 +782,6 @@ struct PickerState {
     search_state: SearchState,
     next_request_token: usize,
     next_search_token: usize,
-    next_validation_token: usize,
     picker_loader: PickerLoader,
     view_rows: Option<usize>,
     view_width: Option<u16>,
@@ -812,7 +806,6 @@ struct PickerState {
     list_keymap: ListKeymap,
     initial_page_load: InitialPageLoadState,
     pending_accept: Option<PendingAccept>,
-    accepted_selection: Option<SessionSelection>,
 }
 
 struct PaginationState {
@@ -838,7 +831,7 @@ struct PendingLoad {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingAccept {
     thread_id: ThreadId,
-    validation_token: usize,
+    request_token: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1011,12 +1004,30 @@ fn validated_session_target(
             format!("thread/read returned an invalid thread id: {err}"),
         )
     })?;
+    let provider_matches = match provider_filter {
+        ProviderFilter::Any => true,
+        ProviderFilter::MatchDefault(default_provider) => {
+            default_provider == &thread.model_provider
+        }
+    };
+    let source_matches = matches!(thread.source, SessionSource::Cli | SessionSource::VsCode)
+        || (include_non_interactive
+            && matches!(
+                thread.source,
+                SessionSource::Exec | SessionSource::AppServer
+            ));
+    let path_is_archived = thread.path.as_deref().is_some_and(|path| {
+        path.components().any(|component| {
+            component.as_os_str() == std::ffi::OsStr::new(codex_rollout::ARCHIVED_SESSIONS_SUBDIR)
+        })
+    });
+    let row = Row::from_app_server_thread(&thread, validated_thread_id);
     if validated_thread_id != thread_id
-        || !provider_matches(provider_filter, &thread.model_provider)
-        || !source_matches(&thread.source, include_non_interactive)
+        || !provider_matches
+        || !source_matches
         || cwd_filter.is_some_and(|cwd_filter| !paths_match(thread.cwd.as_path(), cwd_filter))
-        || thread.path.as_deref().is_some_and(rollout_path_is_archived)
-        || (!query.is_empty() && !thread_matches_query(&thread, query))
+        || path_is_archived
+        || (!query.is_empty() && !row.matches_query(query))
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -1027,42 +1038,6 @@ fn validated_session_target(
     Ok(SessionTarget {
         path: thread.path,
         thread_id,
-    })
-}
-
-fn thread_matches_query(thread: &Thread, query: &str) -> bool {
-    displayed_thread_preview(&thread.preview)
-        .to_lowercase()
-        .contains(query)
-        || thread
-            .name
-            .as_ref()
-            .is_some_and(|name| name.to_lowercase().contains(query))
-        || thread.id.to_lowercase().contains(query)
-        || thread
-            .git_info
-            .as_ref()
-            .and_then(|git_info| git_info.branch.as_ref())
-            .is_some_and(|branch| branch.to_lowercase().contains(query))
-        || thread.cwd.to_string_lossy().to_lowercase().contains(query)
-}
-
-fn provider_matches(provider_filter: &ProviderFilter, model_provider: &str) -> bool {
-    match provider_filter {
-        ProviderFilter::Any => true,
-        ProviderFilter::MatchDefault(default_provider) => default_provider == model_provider,
-    }
-}
-
-fn source_matches(source: &SessionSource, include_non_interactive: bool) -> bool {
-    matches!(source, SessionSource::Cli | SessionSource::VsCode)
-        || (include_non_interactive
-            && matches!(source, SessionSource::Exec | SessionSource::AppServer))
-}
-
-fn rollout_path_is_archived(path: &Path) -> bool {
-    path.components().any(|component| {
-        component.as_os_str() == std::ffi::OsStr::new(codex_rollout::ARCHIVED_SESSIONS_SUBDIR)
     })
 }
 
@@ -1098,6 +1073,29 @@ enum SeenRowKey {
 }
 
 impl Row {
+    fn from_app_server_thread(thread: &Thread, thread_id: ThreadId) -> Self {
+        let preview = thread.preview.trim();
+        Self {
+            path: thread.path.clone(),
+            preview: if preview.is_empty() {
+                String::from("(no message yet)")
+            } else {
+                preview.to_string()
+            },
+            thread_id: Some(thread_id),
+            thread_name: thread.name.clone(),
+            created_at: chrono::DateTime::from_timestamp(thread.created_at, 0)
+                .map(|dt| dt.with_timezone(&Utc)),
+            updated_at: chrono::DateTime::from_timestamp(thread.updated_at, 0)
+                .map(|dt| dt.with_timezone(&Utc)),
+            cwd: Some(thread.cwd.to_path_buf()),
+            git_branch: thread
+                .git_info
+                .as_ref()
+                .and_then(|git_info| git_info.branch.clone()),
+        }
+    }
+
     fn seen_key(&self) -> Option<SeenRowKey> {
         if let Some(path) = self.path.clone() {
             return Some(SeenRowKey::Path(path));
@@ -1172,7 +1170,6 @@ impl PickerState {
             search_state: SearchState::Idle,
             next_request_token: 0,
             next_search_token: 0,
-            next_validation_token: 0,
             picker_loader,
             view_rows: None,
             view_width: None,
@@ -1197,7 +1194,6 @@ impl PickerState {
             list_keymap: RuntimeKeymap::defaults().list,
             initial_page_load: InitialPageLoadState::ScanAndRepair,
             pending_accept: None,
-            accepted_selection: None,
         }
     }
 
@@ -1379,16 +1375,13 @@ impl PickerState {
                     };
                     if let Some(thread_id) = thread_id {
                         if self.initial_page_load.is_verifying() {
-                            let validation_token = self.next_validation_token;
-                            self.next_validation_token =
-                                self.next_validation_token.wrapping_add(1);
-                            self.pending_accept = Some(PendingAccept {
+                            let pending_accept = PendingAccept {
                                 thread_id,
-                                validation_token,
-                            });
+                                request_token: self.allocate_request_token(),
+                            };
+                            self.pending_accept = Some(pending_accept);
                             (self.picker_loader)(PickerLoadRequest::Validate {
-                                thread_id,
-                                validation_token,
+                                pending_accept,
                                 cwd_filter: self.active_cwd_filter(),
                                 provider_filter: self.provider_filter.clone(),
                                 query: self.query.to_lowercase(),
@@ -1583,7 +1576,10 @@ impl PickerState {
         }));
     }
 
-    async fn handle_background_event(&mut self, event: BackgroundEvent) -> Result<()> {
+    async fn handle_background_event(
+        &mut self,
+        event: BackgroundEvent,
+    ) -> Result<Option<SessionSelection>> {
         match event {
             BackgroundEvent::Page {
                 request_token,
@@ -1593,10 +1589,10 @@ impl PickerState {
             } => {
                 let pending = match self.pagination.loading {
                     LoadingState::Pending(pending) => pending,
-                    LoadingState::Idle => return Ok(()),
+                    LoadingState::Idle => return Ok(None),
                 };
                 if pending.request_token != request_token {
-                    return Ok(());
+                    return Ok(None);
                 }
                 match phase {
                     PageLoadPhase::Fast => {
@@ -1677,26 +1673,19 @@ impl PickerState {
                 }
             },
             BackgroundEvent::Validation {
-                thread_id,
-                validation_token,
+                pending_accept,
                 target,
             } => {
-                if self.pending_accept
-                    != Some(PendingAccept {
-                        thread_id,
-                        validation_token,
-                    })
-                {
-                    return Ok(());
+                if self.pending_accept != Some(pending_accept) {
+                    return Ok(None);
                 }
                 self.pending_accept = None;
                 match target {
                     Ok(target) => {
-                        self.accepted_selection =
-                            Some(self.action.selection(target.path, target.thread_id));
+                        return Ok(Some(self.action.selection(target.path, target.thread_id)));
                     }
                     Err(err) => {
-                        warn!(%err, %thread_id, "Selected session failed validation");
+                        warn!(%err, thread_id = %pending_accept.thread_id, "Selected session failed validation");
                         self.inline_error =
                             Some(String::from("Selected session is no longer available"));
                         self.request_frame();
@@ -1704,7 +1693,7 @@ impl PickerState {
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn reset_pagination(&mut self) {
@@ -2199,27 +2188,7 @@ fn row_from_app_server_thread(thread: Thread) -> Option<Row> {
             return None;
         }
     };
-    Some(Row {
-        path: thread.path,
-        preview: displayed_thread_preview(&thread.preview).to_string(),
-        thread_id: Some(thread_id),
-        thread_name: thread.name,
-        created_at: chrono::DateTime::from_timestamp(thread.created_at, 0)
-            .map(|dt| dt.with_timezone(&Utc)),
-        updated_at: chrono::DateTime::from_timestamp(thread.updated_at, 0)
-            .map(|dt| dt.with_timezone(&Utc)),
-        cwd: Some(thread.cwd.to_path_buf()),
-        git_branch: thread.git_info.and_then(|git_info| git_info.branch),
-    })
-}
-
-fn displayed_thread_preview(preview: &str) -> &str {
-    let preview = preview.trim();
-    if preview.is_empty() {
-        "(no message yet)"
-    } else {
-        preview
-    }
+    Some(Row::from_app_server_thread(&thread, thread_id))
 }
 
 fn thread_list_params(
@@ -3718,6 +3687,31 @@ mod tests {
         }
     }
 
+    fn make_thread(thread_id: ThreadId) -> Thread {
+        Thread {
+            id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: String::from("openai"),
+            created_at: 1,
+            updated_at: 2,
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp").abs(),
+            cli_version: String::from("0.0.0"),
+            source: SessionSource::Cli,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        }
+    }
+
     fn footer_lines_text(state: &PickerState, width: u16) -> String {
         footer_hint_lines(state, width)
             .into_iter()
@@ -4247,7 +4241,7 @@ mod tests {
             state.pending_accept,
             Some(PendingAccept {
                 thread_id,
-                validation_token: 0,
+                request_token: 2,
             })
         );
     }
@@ -6432,8 +6426,8 @@ session_picker_view = "dense"
         let validation_requests = Arc::new(Mutex::new(Vec::new()));
         let validation_request_sink = validation_requests.clone();
         let loader = Arc::new(move |request| {
-            if let PickerLoadRequest::Validate { thread_id, .. } = request {
-                validation_request_sink.lock().unwrap().push(thread_id);
+            if let PickerLoadRequest::Validate { pending_accept, .. } = request {
+                validation_request_sink.lock().unwrap().push(pending_accept);
             }
         });
         let mut state = PickerState::new(
@@ -6469,16 +6463,24 @@ session_picker_view = "dense"
             state.pending_accept,
             Some(PendingAccept {
                 thread_id,
-                validation_token: 0,
+                request_token: 0,
             })
         );
-        assert_eq!(*validation_requests.lock().unwrap(), vec![thread_id]);
+        assert_eq!(
+            *validation_requests.lock().unwrap(),
+            vec![PendingAccept {
+                thread_id,
+                request_token: 0,
+            }]
+        );
 
         let validated_path = PathBuf::from("/tmp/validated.jsonl");
-        state
+        let selection = state
             .handle_background_event(BackgroundEvent::Validation {
-                thread_id,
-                validation_token: 0,
+                pending_accept: PendingAccept {
+                    thread_id,
+                    request_token: 0,
+                },
                 target: Ok(SessionTarget {
                     path: Some(validated_path.clone()),
                     thread_id,
@@ -6487,7 +6489,7 @@ session_picker_view = "dense"
             .await
             .expect("validation should not abort the picker");
 
-        match state.accepted_selection.take() {
+        match selection {
             Some(SessionSelection::Resume(SessionTarget {
                 path: Some(path),
                 thread_id: selected_thread_id,
@@ -6511,15 +6513,15 @@ session_picker_view = "dense"
             SessionPickerAction::Resume,
         );
         let thread_id = ThreadId::new();
-        state.pending_accept = Some(PendingAccept {
+        let pending_accept = PendingAccept {
             thread_id,
-            validation_token: 7,
-        });
+            request_token: 7,
+        };
+        state.pending_accept = Some(pending_accept);
 
-        state
+        let selection = state
             .handle_background_event(BackgroundEvent::Validation {
-                thread_id,
-                validation_token: 7,
+                pending_accept,
                 target: Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "stale state DB row",
@@ -6528,8 +6530,8 @@ session_picker_view = "dense"
             .await
             .expect("validation failure should not abort the picker");
 
+        assert!(selection.is_none());
         assert_eq!(state.pending_accept, None);
-        assert!(state.accepted_selection.is_none());
         assert_eq!(
             state.inline_error,
             Some(String::from("Selected session is no longer available"))
@@ -6550,14 +6552,16 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let pending_accept = PendingAccept {
             thread_id,
-            validation_token: 2,
+            request_token: 2,
         };
         state.pending_accept = Some(pending_accept);
 
-        state
+        let selection = state
             .handle_background_event(BackgroundEvent::Validation {
-                thread_id,
-                validation_token: 1,
+                pending_accept: PendingAccept {
+                    thread_id,
+                    request_token: 1,
+                },
                 target: Ok(SessionTarget {
                     path: Some(PathBuf::from("/tmp/stale.jsonl")),
                     thread_id,
@@ -6566,8 +6570,8 @@ session_picker_view = "dense"
             .await
             .expect("stale validation should not abort the picker");
 
+        assert!(selection.is_none());
         assert_eq!(state.pending_accept, Some(pending_accept));
-        assert!(state.accepted_selection.is_none());
     }
 
     #[test]
@@ -6602,7 +6606,7 @@ session_picker_view = "dense"
         );
         state.pending_accept = Some(PendingAccept {
             thread_id: ThreadId::new(),
-            validation_token: 0,
+            request_token: 0,
         });
 
         assert_snapshot!(
@@ -6614,28 +6618,9 @@ session_picker_view = "dense"
     #[test]
     fn app_server_row_keeps_pathless_threads() {
         let thread_id = ThreadId::new();
-        let thread = Thread {
-            id: thread_id.to_string(),
-            session_id: thread_id.to_string(),
-            forked_from_id: None,
-            parent_thread_id: None,
-            preview: String::from("remote thread"),
-            ephemeral: false,
-            model_provider: String::from("openai"),
-            created_at: 1,
-            updated_at: 2,
-            status: codex_app_server_protocol::ThreadStatus::Idle,
-            path: None,
-            cwd: test_path_buf("/tmp").abs(),
-            cli_version: String::from("0.0.0"),
-            source: codex_app_server_protocol::SessionSource::Cli,
-            thread_source: None,
-            agent_nickname: None,
-            agent_role: None,
-            git_info: None,
-            name: Some(String::from("Named thread")),
-            turns: Vec::new(),
-        };
+        let mut thread = make_thread(thread_id);
+        thread.preview = String::from("remote thread");
+        thread.name = Some(String::from("Named thread"));
 
         let row = row_from_app_server_thread(thread).expect("row should be preserved");
 
@@ -6647,28 +6632,10 @@ session_picker_view = "dense"
     #[test]
     fn selected_session_validation_uses_authoritative_metadata() {
         let thread_id = ThreadId::new();
-        let thread = Thread {
-            id: thread_id.to_string(),
-            session_id: thread_id.to_string(),
-            forked_from_id: None,
-            parent_thread_id: None,
-            preview: String::from("session"),
-            ephemeral: false,
-            model_provider: String::from("openai"),
-            created_at: 1,
-            updated_at: 2,
-            status: codex_app_server_protocol::ThreadStatus::Idle,
-            path: Some(PathBuf::from("/tmp/repaired.jsonl")),
-            cwd: test_path_buf("/tmp/current").abs(),
-            cli_version: String::from("0.0.0"),
-            source: SessionSource::Cli,
-            thread_source: None,
-            agent_nickname: None,
-            agent_role: None,
-            git_info: None,
-            name: None,
-            turns: Vec::new(),
-        };
+        let mut thread = make_thread(thread_id);
+        thread.preview = String::from("session");
+        thread.path = Some(PathBuf::from("/tmp/repaired.jsonl"));
+        thread.cwd = test_path_buf("/tmp/current").abs();
 
         let target = validated_session_target(
             thread.clone(),
@@ -7229,7 +7196,7 @@ session_picker_view = "dense"
         state.query = String::from("selected query");
         state.pending_accept = Some(PendingAccept {
             thread_id: ThreadId::new(),
-            validation_token: 0,
+            request_token: 0,
         });
 
         state.handle_paste(String::from("different query"));
