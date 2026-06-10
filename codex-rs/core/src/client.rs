@@ -116,8 +116,11 @@ use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::map_api_error;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
+use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_login::auth_env_telemetry::AuthEnvTelemetry;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
+use codex_model_provider::AgentIdentitySessionFallback;
+use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 #[cfg(test)]
@@ -185,6 +188,7 @@ struct ModelClientState {
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
+    agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
 
@@ -223,6 +227,7 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_override: Option<String>,
 }
 
@@ -358,10 +363,20 @@ impl ModelClient {
                 include_attestation,
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
+                agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
+            agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
             prompt_cache_key_override: None,
         }
+    }
+
+    pub(crate) fn with_agent_identity_policy(
+        mut self,
+        agent_identity_policy: AgentIdentityAuthPolicy,
+    ) -> Self {
+        self.agent_identity_policy = agent_identity_policy;
+        self
     }
 
     pub(crate) fn with_prompt_cache_key_override(
@@ -836,12 +851,28 @@ impl ModelClient {
     async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
         let auth = self.state.provider.auth().await;
         let api_provider = self.state.provider.api_provider().await?;
-        let api_auth = self.state.provider.api_auth().await?;
+        let api_auth = self
+            .state
+            .provider
+            .api_auth_for_scope(self.provider_auth_scope())
+            .await?;
         Ok(CurrentClientSetup {
             auth,
             api_provider,
             api_auth,
         })
+    }
+
+    pub(crate) async fn prewarm_auth(&self) -> Result<()> {
+        self.current_client_setup().await.map(|_| ())
+    }
+
+    fn provider_auth_scope(&self) -> ProviderAuthScope {
+        ProviderAuthScope {
+            agent_identity_policy: self.agent_identity_policy,
+            session_source: self.state.session_source.clone(),
+            agent_identity_session_fallback: self.state.agent_identity_session_fallback.clone(),
+        }
     }
 
     /// Opens a websocket connection using the same header and telemetry wiring as normal turns.
@@ -982,7 +1013,11 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
-    fn reset_websocket_session(&mut self) {
+    async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+        self.client.current_client_setup().await
+    }
+
+    pub(crate) fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
         self.websocket_session.last_response_rx = None;
@@ -1124,7 +1159,7 @@ impl ModelClientSession {
             return Ok(());
         }
 
-        let client_setup = self.client.current_client_setup().await.map_err(|err| {
+        let client_setup = self.current_client_setup().await.map_err(|err| {
             ApiError::Stream(format!(
                 "failed to build websocket prewarm client setup: {err}"
             ))
@@ -1272,7 +1307,7 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let client_setup = self.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -1392,7 +1427,7 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let client_setup = self.current_client_setup().await?;
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),

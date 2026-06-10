@@ -14,8 +14,11 @@ use codex_protocol::account::ProviderAccount;
 use codex_protocol::openai_models::ModelsResponse;
 
 use crate::amazon_bedrock::AmazonBedrockModelProvider;
+use crate::auth::ProviderAuthScope;
 use crate::auth::auth_manager_for_provider;
+use crate::auth::provider_uses_first_party_auth_path;
 use crate::auth::resolve_provider_auth;
+use crate::auth::resolve_provider_auth_for_scope;
 use crate::models_endpoint::OpenAiModelsEndpoint;
 
 /// Optional provider-backed features that Codex may expose at runtime.
@@ -153,6 +156,19 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
     async fn api_auth(&self) -> codex_protocol::error::Result<SharedAuthProvider> {
         let auth = self.auth().await;
         resolve_provider_auth(auth.as_ref(), self.info())
+    }
+
+    /// Returns request credentials, optionally scoped to a Codex session task.
+    async fn api_auth_for_scope(
+        &self,
+        scope: ProviderAuthScope,
+    ) -> codex_protocol::error::Result<SharedAuthProvider> {
+        if !provider_uses_first_party_auth_path(self.info()) {
+            return self.api_auth().await;
+        }
+        let auth = self.auth().await;
+        resolve_provider_auth_for_scope(self.auth_manager(), auth.as_ref(), self.info(), scope)
+            .await
     }
 
     /// Creates the model manager implementation appropriate for this provider.
