@@ -39,6 +39,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::tempdir;
 
+fn connections_mut(manager: &mut McpConnectionManager) -> &mut McpConnections {
+    Arc::get_mut(
+        manager
+            .connections
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner),
+    )
+    .expect("test manager connection snapshot should be uniquely owned")
+}
+
 fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
     ToolInfo {
         server_name: server_name.to_string(),
@@ -804,7 +814,7 @@ async fn list_all_tools_uses_cached_tool_info_snapshot_while_client_is_pending()
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -841,7 +851,7 @@ async fn list_available_server_infos_uses_cache_while_client_is_pending() {
         /*prefix_mcp_tool_names*/ true,
     );
     let server_info = create_test_server_info("Codex Apps");
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -878,7 +888,7 @@ async fn list_all_tools_accepts_canonical_namespaced_tool_names() {
         &permission_profile,
         /*prefix_mcp_tool_names*/ false,
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         "rmcp".to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -921,7 +931,7 @@ async fn list_all_tools_applies_legacy_mcp_prefix_by_default() {
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         "rmcp".to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -963,7 +973,7 @@ async fn list_all_tools_blocks_while_client_is_pending_without_cached_tool_info_
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -992,7 +1002,13 @@ fn cancel_startup_cancels_manager_owned_token() {
 
     manager.cancel_startup();
 
-    assert!(manager.startup_cancellation_token.is_cancelled());
+    assert!(
+        manager
+            .startup_cancellation_token
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_cancelled()
+    );
 }
 
 #[tokio::test]
@@ -1014,7 +1030,7 @@ async fn shutdown_cancels_pending_tool_listing() {
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -1049,7 +1065,7 @@ async fn list_all_tools_does_not_block_when_cached_tool_info_snapshot_is_empty()
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -1089,7 +1105,7 @@ async fn list_all_tools_uses_cached_tool_info_snapshot_when_client_startup_fails
         /*prefix_mcp_tool_names*/ true,
     );
     let startup_complete = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
             client: failed_client,
@@ -1134,7 +1150,7 @@ async fn list_all_tools_adds_server_metadata_to_cached_tools() {
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    manager.server_metadata.insert(
+    connections_mut(&mut manager).server_metadata.insert(
         server_name.to_string(),
         McpServerMetadata {
             pollutes_memory: true,
@@ -1144,7 +1160,7 @@ async fn list_all_tools_adds_server_metadata_to_cached_tools() {
             supports_parallel_tool_calls: true,
         },
     );
-    manager.clients.insert(
+    connections_mut(&mut manager).clients.insert(
         server_name.to_string(),
         AsyncManagedClient {
             client: pending_client,
@@ -1251,14 +1267,15 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
     )
     .await;
 
-    assert!(manager.clients.contains_key("stdio"));
-    assert!(manager.clients.contains_key("http"));
+    let connections = manager.connections();
+    assert!(connections.clients.contains_key("stdio"));
+    assert!(connections.clients.contains_key("http"));
     assert!(
         !manager
             .wait_for_server_ready("stdio", Duration::from_millis(10))
             .await
     );
-    let error = match manager
+    let error = match connections
         .clients
         .get("stdio")
         .expect("stdio client")

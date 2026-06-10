@@ -7093,7 +7093,7 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
                 .await
                 .is_some(),
         ),
-        (false, false)
+        (true, false)
     );
 }
 
