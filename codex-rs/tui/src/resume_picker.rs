@@ -1617,7 +1617,6 @@ impl PickerState {
                                     %err,
                                     "Session picker reconciliation failed; keeping State DB results"
                                 );
-                                self.initial_page_load = InitialPageLoadState::StateDbFirst;
                                 self.request_frame();
                                 false
                             }
@@ -4153,17 +4152,20 @@ mod tests {
     #[tokio::test]
     async fn local_picker_keeps_fast_page_when_reconciliation_fails() {
         let (mut state, recorded_requests) = reconciling_picker_state();
+        let thread_id = ThreadId::new();
 
         state.start_initial_load();
 
         let request = recorded_requests.lock().unwrap()[0].clone();
+        let mut provisional_row = make_row("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "a");
+        provisional_row.thread_id = Some(thread_id);
         state
             .handle_background_event(BackgroundEvent::Page {
                 request_token: request.request_token,
                 search_token: request.search_token,
                 phase: PageLoadPhase::Fast,
                 page: Ok(page(
-                    vec![make_row("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "a")],
+                    vec![provisional_row],
                     Some("db-cursor"),
                     /*num_scanned_files*/ 1,
                     /*reached_scan_cap*/ false,
@@ -4200,13 +4202,29 @@ mod tests {
         ));
 
         state.load_more_if_needed(LoadTrigger::Scroll);
-        let requests = recorded_requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[1].lookup_mode, ThreadListLookupMode::StateDbOnly);
-        assert!(matches!(
-            requests[1].cursor.as_ref(),
-            Some(PageCursor::AppServer(cursor)) if cursor == "db-cursor"
-        ));
+        {
+            let requests = recorded_requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[1].lookup_mode, ThreadListLookupMode::StateDbOnly);
+            assert!(matches!(
+                requests[1].cursor.as_ref(),
+                Some(PageCursor::AppServer(cursor)) if cursor == "db-cursor"
+            ));
+        }
+
+        let selection = state
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("enter should not abort the picker");
+
+        assert!(selection.is_none());
+        assert_eq!(
+            state.pending_accept,
+            Some(PendingAccept {
+                thread_id,
+                validation_token: 0,
+            })
+        );
     }
 
     async fn assert_reconciliation_restarts_search(provisional_preview: &str) {
