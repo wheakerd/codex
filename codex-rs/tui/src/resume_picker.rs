@@ -1521,7 +1521,7 @@ impl PickerState {
     }
 
     fn handle_paste(&mut self, pasted: String) {
-        if self.is_transcript_loading() {
+        if self.is_transcript_loading() || self.pending_accept.is_some() {
             return;
         }
         let Some(pasted) = normalize_pasted_search_query(&pasted) else {
@@ -7175,6 +7175,28 @@ session_picker_view = "dense"
         state.handle_paste(String::from("  \n\t  "));
 
         assert_eq!(state.query, "resize");
+    }
+
+    #[tokio::test]
+    async fn paste_is_ignored_while_selection_validation_is_pending() {
+        let loader = page_only_loader(|_| {});
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        state.query = String::from("selected query");
+        state.pending_accept = Some(PendingAccept {
+            thread_id: ThreadId::new(),
+            validation_token: 0,
+        });
+
+        state.handle_paste(String::from("different query"));
+
+        assert_eq!(state.query, "selected query");
     }
 
     #[tokio::test]
