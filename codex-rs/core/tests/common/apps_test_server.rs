@@ -17,7 +17,6 @@ use wiremock::matchers::path;
 use wiremock::matchers::path_regex;
 
 const CONNECTOR_ID: &str = "calendar";
-pub const LINK_ID: &str = "link_calendar";
 const CONNECTOR_NAME: &str = "Calendar";
 const DISCOVERABLE_CALENDAR_ID: &str = "connector_2128aebfecb84f64a069897515042a44";
 const DISCOVERABLE_GMAIL_ID: &str = "connector_68df038e0ba48191908c8434991bbac2";
@@ -354,7 +353,6 @@ impl Respond for CodexAppsJsonRpcResponder {
                                 },
                                 "_meta": {
                                     "connector_id": CONNECTOR_ID,
-                                    "link_id": LINK_ID,
                                     "connector_name": self.connector_name.clone(),
                                     "connector_description": self.connector_description.clone(),
                                     "openai/outputTemplate": CALENDAR_CREATE_EVENT_MCP_APP_RESOURCE_URI,
@@ -381,7 +379,6 @@ impl Respond for CodexAppsJsonRpcResponder {
                                 },
                                 "_meta": {
                                     "connector_id": CONNECTOR_ID,
-                                    "link_id": LINK_ID,
                                     "connector_name": self.connector_name.clone(),
                                     "connector_description": self.connector_description.clone(),
                                     "_codex_apps": {
@@ -414,7 +411,6 @@ impl Respond for CodexAppsJsonRpcResponder {
                                 },
                                 "_meta": {
                                     "connector_id": CONNECTOR_ID,
-                                    "link_id": LINK_ID,
                                     "connector_name": self.connector_name.clone(),
                                     "connector_description": self.connector_description.clone(),
                                     "openai/fileParams": ["file"],

@@ -542,7 +542,6 @@ impl ThreadHistoryBuilder {
                 .unwrap_or(serde_json::Value::Null),
             connector_id: None,
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
-            link_id: None,
             plugin_id: payload.plugin_id.clone(),
             result: None,
             error: None,
@@ -586,7 +585,6 @@ impl ThreadHistoryBuilder {
                 .unwrap_or(serde_json::Value::Null),
             connector_id: payload.connector_id.clone(),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
-            link_id: payload.link_id.clone(),
             plugin_id: payload.plugin_id.clone(),
             result,
             error,
@@ -1513,7 +1511,6 @@ mod tests {
                 arguments: arguments.clone(),
                 connector_id: Some("calendar".into()),
                 mcp_app_resource_uri: Some("ui://widget/calendar-create-event.html".into()),
-                link_id: Some("link_calendar".into()),
                 plugin_id: Some("sample@test".into()),
                 status: CoreMcpToolCallStatus::InProgress,
                 result: None,
@@ -1539,7 +1536,6 @@ mod tests {
                 arguments,
                 connector_id: Some("calendar".into()),
                 mcp_app_resource_uri: Some("ui://widget/calendar-create-event.html".into()),
-                link_id: Some("link_calendar".into(),),
                 plugin_id: Some("sample@test".into()),
                 result: None,
                 error: None,
@@ -2104,7 +2100,6 @@ mod tests {
                 },
                 connector_id: None,
                 mcp_app_resource_uri: None,
-                link_id: None,
                 plugin_id: None,
                 duration: Duration::from_millis(8),
                 result: Err("boom".into()),
@@ -2156,7 +2151,6 @@ mod tests {
                 arguments: serde_json::json!({"id":"123"}),
                 connector_id: None,
                 mcp_app_resource_uri: None,
-                link_id: None,
                 plugin_id: None,
                 result: None,
                 error: Some(McpToolCallError {
@@ -2186,7 +2180,6 @@ mod tests {
                 },
                 connector_id: Some("calendar".into()),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
-                link_id: Some("link_calendar".into()),
                 plugin_id: Some("sample@test".into()),
                 duration: Duration::from_millis(8),
                 result: Ok(CallToolResult {
@@ -2219,7 +2212,6 @@ mod tests {
                 arguments: serde_json::json!({"id":"123"}),
                 connector_id: Some("calendar".into()),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
-                link_id: Some("link_calendar".into(),),
                 plugin_id: Some("sample@test".into()),
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![serde_json::json!({
