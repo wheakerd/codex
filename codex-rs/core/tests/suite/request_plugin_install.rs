@@ -171,10 +171,7 @@ async fn request_plugin_install_is_available_without_search_tool_after_discovery
     assert!(description.contains(
         "Use this tool only after `list_available_plugins_to_install` returns one or more plugins or connectors that exactly match the user's explicit request."
     ));
-    assert!(
-        description
-            .contains("For multiple exact targets, make one call with `entries` or `categories`")
-    );
+    assert!(description.contains("For multiple exact targets, make one call with `entries`"));
     assert!(description.contains("IMPORTANT: DO NOT call this tool in parallel with other tools."));
     assert!(!description.contains(DISCOVERABLE_GMAIL_ID));
     assert!(!description.contains("tool_search fails to find a good match"));
@@ -192,7 +189,7 @@ async fn request_plugin_install_is_available_without_search_tool_after_discovery
     }));
     assert!(variants.iter().any(|variant| {
         variant.pointer("/properties/entries").is_some()
-            && variant.pointer("/properties/categories").is_some()
+            && variant.pointer("/properties/categories").is_none()
     }));
 
     Ok(())

@@ -858,8 +858,7 @@ async fn request_plugin_install_description_defers_inventory_to_list_tool() {
         "Use this tool only after `list_available_plugins_to_install` returns one or more plugins or connectors that exactly match the user's explicit request."
     ));
     assert!(
-        request_description
-            .contains("For multiple exact targets, make one call with `entries` or `categories`")
+        request_description.contains("For multiple exact targets, make one call with `entries`")
     );
     assert!(!request_description.contains("github"));
 }
