@@ -59,6 +59,20 @@ fn function_tool_description(body: &Value, name: &str) -> Option<String> {
         })
 }
 
+fn function_tool_parameters<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find_map(|tool| {
+                if tool.get("name").and_then(Value::as_str) == Some(name) {
+                    tool.get("parameters")
+                } else {
+                    None
+                }
+            })
+        })
+}
+
 fn configure_apps_without_search_tool(config: &mut Config, apps_base_url: &str) {
     config
         .features
@@ -155,11 +169,31 @@ async fn request_plugin_install_is_available_without_search_tool_after_discovery
     let description =
         function_tool_description(&body, REQUEST_PLUGIN_INSTALL_TOOL_NAME).expect("description");
     assert!(description.contains(
-        "Use this tool only after `list_available_plugins_to_install` returns a plugin or connector that exactly matches the user's explicit request."
+        "Use this tool only after `list_available_plugins_to_install` returns one or more plugins or connectors that exactly match the user's explicit request."
     ));
+    assert!(
+        description
+            .contains("For multiple exact targets, make one call with `entries` or `categories`")
+    );
     assert!(description.contains("IMPORTANT: DO NOT call this tool in parallel with other tools."));
     assert!(!description.contains(DISCOVERABLE_GMAIL_ID));
     assert!(!description.contains("tool_search fails to find a good match"));
+
+    let parameters =
+        function_tool_parameters(&body, REQUEST_PLUGIN_INSTALL_TOOL_NAME).expect("parameters");
+    let variants = parameters
+        .get("oneOf")
+        .and_then(Value::as_array)
+        .expect("request_plugin_install should expose oneOf parameters");
+    assert_eq!(variants.len(), 2);
+    assert!(variants.iter().any(|variant| {
+        variant.pointer("/properties/tool_id").is_some()
+            && variant.pointer("/properties/tool_type").is_some()
+    }));
+    assert!(variants.iter().any(|variant| {
+        variant.pointer("/properties/entries").is_some()
+            && variant.pointer("/properties/categories").is_some()
+    }));
 
     Ok(())
 }
