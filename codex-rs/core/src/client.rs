@@ -47,7 +47,6 @@ use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
-use codex_api::ResponsesApiInputItem;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesClient as ApiResponsesClient;
 use codex_api::ResponsesOptions as ApiResponsesOptions;
@@ -723,26 +722,22 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
-        let mut input = prompt
-            .get_formatted_input_for_request(model_info.use_responses_lite)
-            .into_iter()
-            .map(ResponsesApiInputItem::from)
-            .collect::<Vec<_>>();
+        let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
         let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let (instructions, tools) = if model_info.use_responses_lite {
-            let mut prefix = vec![ResponsesApiInputItem::additional_tools(tools)];
+            let mut prefix = vec![ResponseItem::AdditionalTools {
+                role: "developer".to_string(),
+                tools,
+            }];
             if !prompt.base_instructions.text.is_empty() {
-                prefix.push(
-                    ResponseItem::Message {
-                        id: None,
-                        role: "developer".to_string(),
-                        content: vec![ContentItem::InputText {
-                            text: prompt.base_instructions.text.clone(),
-                        }],
-                        phase: None,
-                    }
-                    .into(),
-                );
+                prefix.push(ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: prompt.base_instructions.text.clone(),
+                    }],
+                    phase: None,
+                });
             }
             input.splice(0..0, prefix);
             (String::new(), None)
@@ -1004,7 +999,7 @@ impl ModelClientSession {
         request: &ResponsesApiRequest,
         last_response: Option<&LastResponse>,
         allow_empty_delta: bool,
-    ) -> Option<Vec<ResponsesApiInputItem>> {
+    ) -> Option<Vec<ResponseItem>> {
         // Checks whether the current request is an incremental extension of the previous request.
         // We only reuse an incremental input delta when non-input request fields are unchanged and
         // `input` is a strict
@@ -1024,13 +1019,7 @@ impl ModelClientSession {
 
         let mut baseline = previous_request.input.clone();
         if let Some(last_response) = last_response {
-            baseline.extend(
-                last_response
-                    .items_added
-                    .iter()
-                    .cloned()
-                    .map(ResponsesApiInputItem::from),
-            );
+            baseline.extend(last_response.items_added.clone());
         }
 
         let baseline_len = baseline.len();

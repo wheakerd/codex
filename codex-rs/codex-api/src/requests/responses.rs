@@ -1,4 +1,3 @@
-use crate::common::ResponsesApiInputItem;
 use codex_protocol::models::ResponseItem;
 use serde_json::Value;
 
@@ -9,7 +8,7 @@ pub enum Compression {
     Zstd,
 }
 
-pub(crate) fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponsesApiInputItem]) {
+pub(crate) fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
     let Some(input_value) = payload_json.get_mut("input") else {
         return;
     };
@@ -18,9 +17,6 @@ pub(crate) fn attach_item_ids(payload_json: &mut Value, original_items: &[Respon
     };
 
     for (value, item) in items.iter_mut().zip(original_items.iter()) {
-        let ResponsesApiInputItem::ResponseItem(item) = item else {
-            continue;
-        };
         if let ResponseItem::Reasoning { id, .. }
         | ResponseItem::Message { id: Some(id), .. }
         | ResponseItem::WebSearchCall { id: Some(id), .. }

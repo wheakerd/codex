@@ -21,38 +21,11 @@ use tokio::sync::mpsc;
 pub const WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY: &str = "ws_request_header_traceparent";
 pub const WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY: &str = "ws_request_header_tracestate";
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(untagged)]
-pub enum ResponsesApiInputItem {
-    ResponseItem(ResponseItem),
-    AdditionalTools {
-        r#type: &'static str,
-        role: &'static str,
-        tools: Vec<Value>,
-    },
-}
-
-impl ResponsesApiInputItem {
-    pub fn additional_tools(tools: Vec<Value>) -> Self {
-        Self::AdditionalTools {
-            r#type: "additional_tools",
-            role: "developer",
-            tools,
-        }
-    }
-}
-
-impl From<ResponseItem> for ResponsesApiInputItem {
-    fn from(item: ResponseItem) -> Self {
-        Self::ResponseItem(item)
-    }
-}
-
 /// Canonical input payload for the compaction endpoint.
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactionInput<'a> {
     pub model: &'a str,
-    pub input: &'a [ResponsesApiInputItem],
+    pub input: &'a [ResponseItem],
     #[serde(skip_serializing_if = "str::is_empty")]
     pub instructions: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,7 +185,7 @@ pub struct ResponsesApiRequest {
     pub model: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub instructions: String,
-    pub input: Vec<ResponsesApiInputItem>,
+    pub input: Vec<ResponseItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<serde_json::Value>>,
     pub tool_choice: String,
@@ -261,7 +234,7 @@ pub struct ResponseCreateWsRequest {
     pub instructions: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
-    pub input: Vec<ResponsesApiInputItem>,
+    pub input: Vec<ResponseItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
     pub tool_choice: String,

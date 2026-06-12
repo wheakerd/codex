@@ -29,7 +29,8 @@ pub fn persisted_rollout_items(items: &[RolloutItem]) -> Vec<RolloutItem> {
 #[inline]
 pub fn should_persist_response_item(item: &ResponseItem) -> bool {
     match item {
-        ResponseItem::Message { .. }
+        ResponseItem::AdditionalTools { .. }
+        | ResponseItem::Message { .. }
         | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
@@ -61,7 +62,8 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::WebSearchCall { .. } => true,
-        ResponseItem::AgentMessage { .. }
+        ResponseItem::AdditionalTools { .. }
+        | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::Compaction { .. }
