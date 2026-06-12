@@ -1,5 +1,8 @@
 use super::PluginLoadOutcome;
 use crate::OPENAI_CURATED_MARKETPLACE_NAME;
+use crate::capabilities::PluginCapabilities;
+use crate::capabilities::PluginCapabilityContext;
+use crate::capabilities::resolve_plugin_capabilities;
 use crate::installed_marketplaces::installed_marketplace_roots_from_layer_stack;
 use crate::loader::PluginHookLoadOutcome;
 use crate::loader::configured_curated_plugin_ids_from_codex_home;
@@ -1315,21 +1318,28 @@ impl PluginsManager {
                 event_name: hook.event_name,
             })
             .collect();
+        let auth_mode = self.auth_mode();
         let app_declarations = load_plugin_apps(source_path.as_path()).await;
-        let apps = app_connector_ids_from_declarations(&app_declarations);
+        let mcp_servers = load_plugin_mcp_servers(source_path.as_path(), auth_mode).await;
+        let projected = if auth_mode.is_some() {
+            resolve_plugin_capabilities(
+                PluginCapabilities::new(app_declarations, mcp_servers),
+                PluginCapabilityContext::new(auth_mode, /* plugin_active */ true),
+            )
+        } else {
+            PluginCapabilities::new(app_declarations, mcp_servers)
+        };
+        let apps = app_connector_ids_from_declarations(&projected.apps);
         let mut seen_app_connector_ids = HashSet::new();
         let mut app_category_by_id = HashMap::new();
-        for app in &app_declarations {
+        for app in &projected.apps {
             if seen_app_connector_ids.insert(app.connector_id.0.as_str())
                 && let Some(category) = &app.category
             {
                 app_category_by_id.insert(app.connector_id.0.clone(), category.clone());
             }
         }
-        let mut mcp_server_names = load_plugin_mcp_servers(source_path.as_path(), self.auth_mode())
-            .await
-            .into_keys()
-            .collect::<Vec<_>>();
+        let mut mcp_server_names = projected.mcp_servers.into_keys().collect::<Vec<_>>();
         mcp_server_names.sort_unstable();
         mcp_server_names.dedup();
 
