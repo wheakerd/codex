@@ -1,4 +1,6 @@
 use anyhow::Context as _;
+use codex_desktop_distribution::DesktopDistributionError;
+use codex_desktop_distribution::locate_current_or_installed_distribution;
 use std::ffi::CString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,7 +15,7 @@ pub async fn run_mac_app_open_or_install(
     workspace: PathBuf,
     download_url_override: Option<String>,
 ) -> anyhow::Result<()> {
-    if let Some(app_path) = find_existing_codex_app_path() {
+    if let Some(app_path) = find_existing_codex_app_path()? {
         eprintln!(
             "Opening Codex Desktop at {app_path}...",
             app_path = app_path.display()
@@ -63,18 +65,12 @@ fn is_apple_silicon_mac() -> bool {
         || macos_sysctl_flag("hw.optional.arm64").unwrap_or(false)
 }
 
-fn find_existing_codex_app_path() -> Option<PathBuf> {
-    candidate_codex_app_paths()
-        .into_iter()
-        .find(|candidate| candidate.is_dir())
-}
-
-fn candidate_codex_app_paths() -> Vec<PathBuf> {
-    let mut paths = vec![PathBuf::from("/Applications/Codex.app")];
-    if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join("Applications").join("Codex.app"));
+fn find_existing_codex_app_path() -> anyhow::Result<Option<PathBuf>> {
+    match locate_current_or_installed_distribution() {
+        Ok(distribution) => Ok(Some(distribution.app_root().to_path_buf())),
+        Err(DesktopDistributionError::NotFound) => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    paths
 }
 
 async fn open_codex_app(app_path: &Path, workspace: &Path) -> anyhow::Result<()> {

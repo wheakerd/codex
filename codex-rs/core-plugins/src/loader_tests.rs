@@ -1,10 +1,15 @@
 use super::*;
+use crate::app_bundled_internal::load_app_bundled_internal_hooks_from_distribution;
 use crate::manifest::load_plugin_manifest;
 use crate::test_support::write_file;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigRequirements;
 use codex_config::ConfigRequirementsToml;
+use codex_config::HookHandlerConfig;
+use codex_desktop_distribution::DesktopDistribution;
+use codex_plugin::AppConnectorId;
+use codex_plugin::PluginHookSourceKind;
 use codex_plugin::PluginId;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -64,6 +69,133 @@ fn configured_plugins_from_stack_merges_user_layers() {
             ),
         ])
     );
+}
+
+#[test]
+fn app_bundled_discovery_failure_never_loads_cached_hooks() {
+    let plugin_id = PluginId::parse("computer-use@openai-bundled").expect("plugin id");
+
+    let (sources, warnings) = select_app_bundled_hook_sources(
+        &plugin_id,
+        Err("distribution discovery failed".to_string()),
+    );
+
+    assert!(sources.is_empty());
+    assert!(warnings.is_empty());
+}
+
+#[tokio::test]
+async fn app_bundled_hooks_use_desktop_while_other_capabilities_use_cache() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let plugin_id = PluginId::parse("computer-use@openai-bundled").expect("plugin id");
+    let cache_root = temp_dir
+        .path()
+        .join("plugins/cache/openai-bundled/computer-use/local");
+    write_file(
+        &cache_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"computer-use","description":"cached capabilities"}"#,
+    );
+    write_file(
+        &cache_root.join("skills/cached/SKILL.md"),
+        "---\nname: cached\ndescription: cached skill\n---\n",
+    );
+    write_file(
+        &cache_root.join(".mcp.json"),
+        r#"{"mcpServers":{"cached-mcp":{"command":"echo"}}}"#,
+    );
+    write_file(
+        &cache_root.join(".app.json"),
+        r#"{"apps":{"cached":{"id":"connector_cached"}}}"#,
+    );
+    write_file(
+        &cache_root.join("hooks/hooks.json"),
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"cache-spoof"}]}]}}"#,
+    );
+
+    let resources_root = temp_dir.path().join("desktop-resources");
+    let bundled_root = resources_root.join("plugins/openai-bundled/plugins/computer-use");
+    write_file(
+        &bundled_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"computer-use","description":"bundled hooks"}"#,
+    );
+    let bundled_hooks_path = bundled_root.join("hooks/hooks.json");
+    write_file(
+        &bundled_hooks_path,
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bundle-hook"}]}]}}"#,
+    );
+    write_file(
+        &resources_root.join("plugins/openai-bundled/.agents/plugins/marketplace.json"),
+        r#"{"name":"openai-bundled","plugins":[{"name":"computer-use","source":{"source":"local","path":"./plugins/computer-use"}}]}"#,
+    );
+    let distribution = DesktopDistribution::from_trusted_resources_path(resources_root)
+        .expect("Desktop distribution");
+    let expected_bundled_root = AbsolutePathBuf::try_from(
+        distribution
+            .contained_directory("plugins/openai-bundled/plugins/computer-use")
+            .expect("bundled plugin root"),
+    )
+    .expect("absolute bundled plugin root");
+    let store = PluginStore::new(temp_dir.path().to_path_buf());
+    let config = PluginConfig {
+        enabled: true,
+        mcp_servers: HashMap::new(),
+    };
+    let skill_config_rules = SkillConfigRules::default();
+    let scope = PluginLoadScope::AllCapabilities {
+        restriction_product: Some(Product::Codex),
+        skill_config_rules: &skill_config_rules,
+    };
+
+    let bundled_hooks = load_app_bundled_internal_hooks_from_distribution(
+        &distribution,
+        &plugin_id,
+        &store.plugin_data_root(&plugin_id),
+    );
+    let loaded = load_plugin(
+        plugin_id.as_key().to_string(),
+        &config,
+        &store,
+        &scope,
+        Some(bundled_hooks),
+    )
+    .await;
+
+    assert_eq!(loaded.error, None);
+    assert_eq!(loaded.root.as_path(), cache_root);
+    assert!(loaded.has_enabled_skills);
+    assert_eq!(loaded.skill_roots, vec![loaded.root.join("skills")]);
+    assert_eq!(loaded.mcp_servers.len(), 1);
+    assert!(loaded.mcp_servers.contains_key("cached-mcp"));
+    assert_eq!(loaded.apps, vec![AppConnectorId("connector_cached".into())]);
+    let [source] = loaded.hook_sources.as_slice() else {
+        panic!("expected one bundled hook source");
+    };
+    assert_eq!(source.kind, PluginHookSourceKind::AppBundledInternal);
+    assert_eq!(source.plugin_root, expected_bundled_root);
+    assert_eq!(source.plugin_data_root, store.plugin_data_root(&plugin_id));
+    let [group] = source.hooks.session_start.as_slice() else {
+        panic!("expected one SessionStart group");
+    };
+    let [HookHandlerConfig::Command { command, .. }] = group.hooks.as_slice() else {
+        panic!("expected one command hook");
+    };
+    assert_eq!(command, "bundle-hook");
+
+    fs::remove_file(bundled_hooks_path).expect("remove bundled hooks");
+    let bundled_hooks = load_app_bundled_internal_hooks_from_distribution(
+        &distribution,
+        &plugin_id,
+        &store.plugin_data_root(&plugin_id),
+    );
+    let without_bundled_hooks = load_plugin(
+        plugin_id.as_key().to_string(),
+        &config,
+        &store,
+        &scope,
+        Some(bundled_hooks),
+    )
+    .await;
+    assert!(without_bundled_hooks.hook_sources.is_empty());
 }
 
 #[tokio::test]

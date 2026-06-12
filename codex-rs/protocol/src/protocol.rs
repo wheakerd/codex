@@ -1408,6 +1408,7 @@ pub enum HookSource {
     Mdm,
     SessionFlags,
     Plugin,
+    AppBundledInternal,
     CloudRequirements,
     CloudManagedConfig,
     LegacyManagedConfigFile,

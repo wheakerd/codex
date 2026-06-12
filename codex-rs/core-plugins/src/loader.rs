@@ -1,4 +1,6 @@
 use crate::OPENAI_CURATED_MARKETPLACE_NAME;
+use crate::app_bundled_internal::is_app_bundled_plugin;
+use crate::app_bundled_internal::load_app_bundled_internal_hooks;
 use crate::manifest::PluginManifestHooks;
 use crate::manifest::PluginManifestPaths;
 use crate::manifest::load_plugin_manifest;
@@ -151,7 +153,14 @@ async fn load_plugins_from_layer_stack_with_scope(
     let mut plugins = Vec::with_capacity(configured_plugins.len());
     let mut seen_mcp_server_names = HashMap::<String, String>::new();
     for (configured_name, plugin) in configured_plugins {
-        let loaded_plugin = load_plugin(configured_name.clone(), &plugin, store, &scope).await;
+        let loaded_plugin = load_plugin(
+            configured_name.clone(),
+            &plugin,
+            store,
+            &scope,
+            /*preloaded_app_bundled_hooks*/ None,
+        )
+        .await;
         for name in loaded_plugin.mcp_servers.keys() {
             if let Some(previous_plugin) =
                 seen_mcp_server_names.insert(name.clone(), configured_name.clone())
@@ -602,6 +611,7 @@ async fn load_plugin(
     plugin: &PluginConfig,
     store: &PluginStore,
     scope: &PluginLoadScope<'_>,
+    preloaded_app_bundled_hooks: Option<Result<Vec<PluginHookSource>, String>>,
 ) -> LoadedPlugin<McpServerConfig> {
     let plugin_id = PluginId::parse(&config_name);
     let active_plugin_root = plugin_id
@@ -708,15 +718,43 @@ async fn load_plugin(
         }
         PluginLoadScope::HooksOnly => {}
     }
-    let (hook_sources, hook_load_warnings) = load_plugin_hooks(
-        &plugin_root,
-        &loaded_plugin_id,
-        &store.plugin_data_root(&loaded_plugin_id),
-        manifest_paths,
-    );
+    let plugin_data_root = store.plugin_data_root(&loaded_plugin_id);
+    // Hooks load from Desktop resources; runtime-variant plugin capabilities remain cache-backed.
+    let (hook_sources, hook_load_warnings) = if is_app_bundled_plugin(&loaded_plugin_id) {
+        let result = match preloaded_app_bundled_hooks {
+            Some(result) => result,
+            None => load_app_bundled_internal_hooks(&loaded_plugin_id, &plugin_data_root).await,
+        };
+        select_app_bundled_hook_sources(&loaded_plugin_id, result)
+    } else {
+        load_plugin_hooks(
+            &plugin_root,
+            &loaded_plugin_id,
+            &plugin_data_root,
+            manifest_paths,
+        )
+    };
     loaded_plugin.hook_sources = hook_sources;
     loaded_plugin.hook_load_warnings = hook_load_warnings;
     loaded_plugin
+}
+
+fn select_app_bundled_hook_sources(
+    plugin_id: &PluginId,
+    result: Result<Vec<PluginHookSource>, String>,
+) -> (Vec<PluginHookSource>, Vec<String>) {
+    match result {
+        Ok(sources) => (sources, Vec::new()),
+        Err(error) => {
+            warn!(
+                diagnostic_code = "app_bundled_internal_hook_load_failed",
+                plugin_id = %plugin_id.as_key(),
+                error,
+                "app-bundled internal hooks failed closed"
+            );
+            (Vec::new(), Vec::new())
+        }
+    }
 }
 
 fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginMcpServerConfig) {
@@ -924,6 +962,7 @@ pub fn load_plugin_hooks(
                     source_path: manifest_path.clone(),
                     source_relative_path: format!("plugin.json#hooks[{index}]"),
                     hooks: hooks_file.hooks.clone(),
+                    kind: Default::default(),
                 });
             }
         }
@@ -992,6 +1031,7 @@ fn append_plugin_hook_file(
         source_path: path.clone(),
         source_relative_path,
         hooks: parsed.hooks,
+        kind: Default::default(),
     });
 }
 

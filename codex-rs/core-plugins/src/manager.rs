@@ -1,5 +1,6 @@
 use super::PluginLoadOutcome;
 use crate::OPENAI_CURATED_MARKETPLACE_NAME;
+use crate::app_bundled_internal::is_app_bundled_plugin;
 use crate::installed_marketplaces::installed_marketplace_roots_from_layer_stack;
 use crate::loader::PluginHookLoadOutcome;
 use crate::loader::configured_curated_plugin_ids_from_codex_home;
@@ -1283,8 +1284,22 @@ impl PluginsManager {
         )
         .await;
         let plugin_data_root = self.store.plugin_data_root(&plugin_id);
-        let (hook_sources, _hook_load_warnings) =
-            load_plugin_hooks(&source_path, &plugin_id, &plugin_data_root, &manifest.paths);
+        let hook_sources = if is_app_bundled_plugin(&plugin_id) {
+            if plugin.enabled {
+                self.plugin_hooks_for_layer_stack(&config.config_layer_stack, config)
+                    .await
+                    .hook_sources
+                    .into_iter()
+                    .filter(|source| source.plugin_id == plugin_id)
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            let (sources, _warnings) =
+                load_plugin_hooks(&source_path, &plugin_id, &plugin_data_root, &manifest.paths);
+            sources
+        };
         let hooks = plugin_hook_declarations(&hook_sources)
             .into_iter()
             .map(|hook| PluginHookSummary {

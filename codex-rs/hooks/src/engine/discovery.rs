@@ -18,6 +18,7 @@ use codex_config::RequirementSource;
 use codex_config::TomlValue;
 use codex_config::version_for_toml;
 use codex_plugin::PluginHookSource;
+use codex_plugin::PluginHookSourceKind;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
@@ -48,6 +49,12 @@ struct HookHandlerSource<'a> {
     plugin_id: Option<String>,
 }
 
+impl HookHandlerSource<'_> {
+    fn is_forced(&self) -> bool {
+        self.source == HookSource::AppBundledInternal
+    }
+}
+
 #[derive(Clone, Copy)]
 struct HookDiscoveryPolicy {
     allow_managed_hooks_only: bool,
@@ -56,7 +63,7 @@ struct HookDiscoveryPolicy {
 
 impl HookDiscoveryPolicy {
     fn allows(self, source: &HookHandlerSource<'_>) -> bool {
-        !self.allow_managed_hooks_only || source.is_managed
+        !self.allow_managed_hooks_only || source.is_managed || source.is_forced()
     }
 }
 
@@ -223,7 +230,12 @@ fn append_plugin_hook_sources(
             source_path,
             source_relative_path,
             hooks,
+            kind,
         } = source;
+        let hook_source = match kind {
+            PluginHookSourceKind::UserReviewed => HookSource::Plugin,
+            PluginHookSourceKind::AppBundledInternal => HookSource::AppBundledInternal,
+        };
         let mut env = HashMap::new();
         let plugin_root_value = plugin_root.display().to_string();
         let plugin_data_root_value = plugin_data_root.display().to_string();
@@ -245,7 +257,7 @@ fn append_plugin_hook_sources(
                     plugin_id.as_str(),
                     source_relative_path.as_str(),
                 ),
-                source: HookSource::Plugin,
+                source: hook_source,
                 is_managed: false,
                 bypass_hook_trust: policy.bypass_hook_trust,
                 hook_states,
@@ -502,30 +514,38 @@ fn append_matcher_groups(
                     // TODO(abhinav): replace this positional suffix with a durable hook id.
                     let key =
                         crate::hook_key(&source.key_source, event_name, group_index, handler_index);
-                    let state = source.hook_states.get(&key);
-                    let enabled = hook_enabled(source.is_managed, state);
+                    let state = (!source.is_forced())
+                        .then(|| source.hook_states.get(&key))
+                        .flatten();
+                    let enabled = source.is_forced() || hook_enabled(source.is_managed, state);
                     let trusted_hash = hook_trusted_hash(source.is_managed, state);
-                    let trust_status =
-                        hook_trust_status(source.is_managed, &current_hash, trusted_hash);
-                    hook_entries.push(HookListEntry {
-                        key,
-                        event_name,
-                        handler_type: HookHandlerType::Command,
-                        matcher: matcher.map(ToOwned::to_owned),
-                        command: Some(command.clone()),
-                        timeout_sec,
-                        status_message: status_message.clone(),
-                        source_path: source.path.clone(),
-                        source: source.source,
-                        plugin_id: source.plugin_id.clone(),
-                        display_order: *display_order,
-                        enabled,
-                        is_managed: source.is_managed,
-                        current_hash,
-                        trust_status,
-                    });
+                    let trust_status = if source.is_forced() {
+                        HookTrustStatus::Trusted
+                    } else {
+                        hook_trust_status(source.is_managed, &current_hash, trusted_hash)
+                    };
+                    if source.source != HookSource::AppBundledInternal {
+                        hook_entries.push(HookListEntry {
+                            key,
+                            event_name,
+                            handler_type: HookHandlerType::Command,
+                            matcher: matcher.map(ToOwned::to_owned),
+                            command: Some(command.clone()),
+                            timeout_sec,
+                            status_message: status_message.clone(),
+                            source_path: source.path.clone(),
+                            source: source.source,
+                            plugin_id: source.plugin_id.clone(),
+                            display_order: *display_order,
+                            enabled,
+                            is_managed: source.is_managed,
+                            current_hash,
+                            trust_status,
+                        });
+                    }
                     if enabled
-                        && (source.bypass_hook_trust
+                        && (source.is_forced()
+                            || source.bypass_hook_trust
                             || matches!(
                                 trust_status,
                                 HookTrustStatus::Managed | HookTrustStatus::Trusted

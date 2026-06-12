@@ -1096,6 +1096,7 @@ fn analytics_hook_source(source: HookSource) -> &'static str {
         HookSource::Mdm => "mdm",
         HookSource::SessionFlags => "session_flags",
         HookSource::Plugin => "plugin",
+        HookSource::AppBundledInternal => "app_bundled_internal",
         HookSource::CloudRequirements => "cloud_requirements",
         HookSource::CloudManagedConfig => "cloud_managed_config",
         HookSource::LegacyManagedConfigFile => "legacy_managed_config_file",

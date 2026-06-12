@@ -23,6 +23,7 @@ use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 use crate::output_spill::HookOutputSpiller;
 use codex_config::ConfigLayerStack;
 use codex_plugin::PluginHookSource;
+use codex_plugin::PluginHookSourceKind;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::HookHandlerType;
@@ -113,7 +114,20 @@ impl ClaudeHooksEngine {
         plugin_hook_load_warnings: Vec<String>,
         shell: CommandShell,
     ) -> Self {
-        if !enabled {
+        let plugin_hook_load_warnings = if enabled {
+            plugin_hook_load_warnings
+        } else {
+            Vec::new()
+        };
+        let plugin_hook_sources = if enabled {
+            plugin_hook_sources
+        } else {
+            plugin_hook_sources
+                .into_iter()
+                .filter(|source| source.kind == PluginHookSourceKind::AppBundledInternal)
+                .collect()
+        };
+        if !enabled && plugin_hook_sources.is_empty() {
             return Self {
                 handlers: Vec::new(),
                 warnings: Vec::new(),
@@ -124,7 +138,7 @@ impl ClaudeHooksEngine {
 
         let _ = schema_loader::generated_hook_schemas();
         let discovered = discovery::discover_handlers(
-            config_layer_stack,
+            enabled.then_some(config_layer_stack).flatten(),
             plugin_hook_sources,
             plugin_hook_load_warnings,
             bypass_hook_trust,

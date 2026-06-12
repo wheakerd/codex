@@ -53,6 +53,9 @@ v2_enum_from_core!(
         LegacyManagedConfigMdm,
         Unknown,
     }
+    aliases {
+        AppBundledInternal => Plugin,
+    }
 );
 
 v2_enum_from_core!(
@@ -153,3 +156,7 @@ pub struct HookCompletedNotification {
     pub turn_id: Option<String>,
     pub run: HookRunSummary,
 }
+
+#[cfg(test)]
+#[path = "hook_tests.rs"]
+mod tests;

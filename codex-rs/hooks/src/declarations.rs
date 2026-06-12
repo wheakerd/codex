@@ -1,4 +1,5 @@
 use codex_plugin::PluginHookSource;
+use codex_plugin::PluginHookSourceKind;
 use codex_protocol::protocol::HookEventName;
 
 /// Minimal declaration metadata for one bundled plugin hook handler.
@@ -13,6 +14,9 @@ pub fn plugin_hook_declarations(hook_sources: &[PluginHookSource]) -> Vec<Plugin
     let mut declarations = Vec::new();
 
     for source in hook_sources {
+        if source.kind == PluginHookSourceKind::AppBundledInternal {
+            continue;
+        }
         let key_source = plugin_hook_key_source(
             source.plugin_id.as_key().as_str(),
             source.source_relative_path.as_str(),
@@ -52,7 +56,7 @@ mod tests {
     fn lists_declared_plugin_handlers_with_persisted_hook_keys() {
         let plugin_root = test_path_buf("/tmp/plugin").abs();
         let source_path = plugin_root.join("hooks/hooks.json");
-        let declarations = plugin_hook_declarations(&[PluginHookSource {
+        let source = PluginHookSource {
             plugin_id: PluginId::parse("demo@test").expect("plugin id"),
             plugin_root: plugin_root.clone(),
             plugin_data_root: plugin_root.join("data"),
@@ -78,7 +82,9 @@ mod tests {
                 }],
                 ..Default::default()
             },
-        }]);
+            kind: Default::default(),
+        };
+        let declarations = plugin_hook_declarations(std::slice::from_ref(&source));
 
         assert_eq!(
             declarations,
@@ -97,5 +103,11 @@ mod tests {
                 },
             ]
         );
+
+        let internal = PluginHookSource {
+            kind: PluginHookSourceKind::AppBundledInternal,
+            ..source
+        };
+        assert!(plugin_hook_declarations(&[internal]).is_empty());
     }
 }
