@@ -1,8 +1,12 @@
+use std::future::pending;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use codex_app_server_protocol::SessionSource as ApiSessionSource;
 use codex_app_server_protocol::Thread;
@@ -178,6 +182,76 @@ fn initial_page_load_tracks_one_time_seed_and_reconciliation() {
     assert!(state.finish_reconciliation());
     assert!(!state.is_provisional());
     assert!(!state.finish_reconciliation());
+}
+
+#[tokio::test]
+async fn loader_does_not_block_followup_requests_and_cancels_on_close() {
+    struct SetOnDrop(Arc<AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let (request_tx, request_rx) = mpsc::unbounded_channel();
+    let (signal_tx, mut signal_rx) = mpsc::unbounded_channel();
+    let page_dropped = Arc::new(AtomicBool::new(false));
+    let worker_page_dropped = page_dropped.clone();
+    let worker = tokio::spawn(run_picker_loader(request_rx, move |request| {
+        let signal_tx = signal_tx.clone();
+        let page_dropped = worker_page_dropped.clone();
+        async move {
+            match request {
+                PickerLoadRequest::Page(_) => {
+                    let _drop_guard = SetOnDrop(page_dropped);
+                    let _ = signal_tx.send("page");
+                    pending::<()>().await;
+                }
+                PickerLoadRequest::Transcript { .. } => {
+                    let _ = signal_tx.send("transcript");
+                }
+                PickerLoadRequest::Preview { .. } => {}
+            }
+        }
+    }));
+
+    request_tx
+        .send(PickerLoadRequest::Page(PageLoadRequest {
+            cursor: None,
+            request_token: 1,
+            search_token: None,
+            cwd_filter: None,
+            provider_filter: ProviderFilter::Any,
+            sort_key: ThreadSortKey::UpdatedAt,
+            seed_from_state_db: true,
+        }))
+        .expect("send page request");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), signal_rx.recv())
+            .await
+            .expect("page request should start"),
+        Some("page")
+    );
+
+    request_tx
+        .send(PickerLoadRequest::Transcript {
+            thread_id: ThreadId::new(),
+        })
+        .expect("send transcript request");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), signal_rx.recv())
+            .await
+            .expect("transcript request should not wait for page load"),
+        Some("transcript")
+    );
+
+    drop(request_tx);
+    tokio::time::timeout(Duration::from_secs(1), worker)
+        .await
+        .expect("loader should stop promptly")
+        .expect("loader task should not panic");
+    assert!(page_dropped.load(Ordering::SeqCst));
 }
 
 #[test]

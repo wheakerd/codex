@@ -1,5 +1,6 @@
 //! Session picker loading, State DB seeding, and authoritative reconciliation.
 
+use std::future::Future;
 use std::io;
 use std::path::Component;
 use std::path::Path;
@@ -7,14 +8,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::NaiveDateTime;
+use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
+use tokio::task::JoinError;
+use tokio::task::JoinSet;
 use tracing::warn;
+use uuid::Uuid;
 
 use super::AppServerSession;
 use super::LoadingState;
@@ -27,10 +38,10 @@ use super::SessionTranscriptState;
 use super::TranscriptCells;
 use super::TranscriptPreviewLine;
 use super::TranscriptPreviewState;
-use super::load_session_transcript;
-use super::load_transcript_preview;
 use super::parse_timestamp_str;
 use super::paths_match;
+use super::transcript_preview_lines;
+use crate::thread_transcript::thread_to_transcript_cells;
 
 const PAGE_SIZE: usize = 25;
 
@@ -143,75 +154,20 @@ pub(super) fn spawn_app_server_page_loader(
     raw_reasoning_visibility: RawReasoningVisibility,
     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
 ) -> PickerLoader {
-    let (request_tx, mut request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
+    let (request_tx, request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
+    let request_handle = app_server.request_handle();
 
     tokio::spawn(async move {
-        let mut app_server = app_server;
-        while let Some(request) = request_rx.recv().await {
-            match request {
-                PickerLoadRequest::Page(request) => {
-                    if request.seed_from_state_db {
-                        match load_app_server_page(
-                            &mut app_server,
-                            /*cursor*/ None,
-                            request.cwd_filter.as_deref(),
-                            request.provider_filter.clone(),
-                            request.sort_key,
-                            include_non_interactive,
-                            ThreadListLookupMode::StateDbOnly,
-                        )
-                        .await
-                        {
-                            Ok(page) => {
-                                let _ = bg_tx.send(BackgroundEvent::SeedPage {
-                                    request_token: request.request_token,
-                                    page,
-                                });
-                            }
-                            Err(err) => {
-                                warn!(
-                                    %err,
-                                    "State DB picker lookup failed; falling back to scan-and-repair"
-                                );
-                            }
-                        }
-                    }
-
-                    let cursor = request.cursor.map(|PageCursor::AppServer(cursor)| cursor);
-                    let page = load_app_server_page(
-                        &mut app_server,
-                        cursor,
-                        request.cwd_filter.as_deref(),
-                        request.provider_filter,
-                        request.sort_key,
-                        include_non_interactive,
-                        ThreadListLookupMode::ScanAndRepair,
-                    )
-                    .await;
-                    let _ = bg_tx.send(BackgroundEvent::Page {
-                        request_token: request.request_token,
-                        search_token: request.search_token,
-                        page,
-                    });
-                }
-                PickerLoadRequest::Preview { thread_id } => {
-                    let preview = load_transcript_preview(&mut app_server, thread_id).await;
-                    let _ = bg_tx.send(BackgroundEvent::Preview { thread_id, preview });
-                }
-                PickerLoadRequest::Transcript { thread_id } => {
-                    let transcript = load_session_transcript(
-                        &mut app_server,
-                        thread_id,
-                        raw_reasoning_visibility,
-                    )
-                    .await;
-                    let _ = bg_tx.send(BackgroundEvent::Transcript {
-                        thread_id,
-                        transcript,
-                    });
-                }
-            }
-        }
+        run_picker_loader(request_rx, move |request| {
+            handle_picker_load_request(
+                request,
+                request_handle.clone(),
+                include_non_interactive,
+                raw_reasoning_visibility,
+                bg_tx.clone(),
+            )
+        })
+        .await;
         if let Err(err) = app_server.shutdown().await {
             warn!(%err, "Failed to shut down app-server picker session");
         }
@@ -222,8 +178,125 @@ pub(super) fn spawn_app_server_page_loader(
     })
 }
 
+async fn run_picker_loader<F, Fut>(
+    mut request_rx: mpsc::UnboundedReceiver<PickerLoadRequest>,
+    mut load_request: F,
+) where
+    F: FnMut(PickerLoadRequest) -> Fut,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let mut tasks = JoinSet::new();
+    let mut page_task: Option<AbortHandle> = None;
+    loop {
+        tokio::select! {
+            request = request_rx.recv() => {
+                let Some(request) = request else {
+                    break;
+                };
+                if matches!(&request, PickerLoadRequest::Page(_)) {
+                    if let Some(page_task) = page_task.take() {
+                        page_task.abort();
+                    }
+                    page_task = Some(tasks.spawn(load_request(request)));
+                } else {
+                    tasks.spawn(load_request(request));
+                }
+            }
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(result) = result {
+                    log_loader_task_result(result);
+                }
+            }
+        }
+    }
+
+    tasks.abort_all();
+    while let Some(result) = tasks.join_next().await {
+        log_loader_task_result(result);
+    }
+}
+
+fn log_loader_task_result(result: Result<(), JoinError>) {
+    if let Err(err) = result
+        && !err.is_cancelled()
+    {
+        warn!(%err, "Session picker loader task failed");
+    }
+}
+
+async fn handle_picker_load_request(
+    request: PickerLoadRequest,
+    request_handle: AppServerRequestHandle,
+    include_non_interactive: bool,
+    raw_reasoning_visibility: RawReasoningVisibility,
+    bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
+) {
+    match request {
+        PickerLoadRequest::Page(request) => {
+            if request.seed_from_state_db {
+                match load_app_server_page(
+                    &request_handle,
+                    /*cursor*/ None,
+                    request.cwd_filter.as_deref(),
+                    request.provider_filter.clone(),
+                    request.sort_key,
+                    include_non_interactive,
+                    ThreadListLookupMode::StateDbOnly,
+                )
+                .await
+                {
+                    Ok(page) => {
+                        let _ = bg_tx.send(BackgroundEvent::SeedPage {
+                            request_token: request.request_token,
+                            page,
+                        });
+                    }
+                    Err(err) => {
+                        warn!(
+                            %err,
+                            "State DB picker lookup failed; falling back to scan-and-repair"
+                        );
+                    }
+                }
+            }
+
+            let cursor = request.cursor.map(|PageCursor::AppServer(cursor)| cursor);
+            let page = load_app_server_page(
+                &request_handle,
+                cursor,
+                request.cwd_filter.as_deref(),
+                request.provider_filter,
+                request.sort_key,
+                include_non_interactive,
+                ThreadListLookupMode::ScanAndRepair,
+            )
+            .await;
+            let _ = bg_tx.send(BackgroundEvent::Page {
+                request_token: request.request_token,
+                search_token: request.search_token,
+                page,
+            });
+        }
+        PickerLoadRequest::Preview { thread_id } => {
+            let preview = read_app_server_thread(&request_handle, thread_id)
+                .await
+                .map(|thread| transcript_preview_lines(&thread));
+            let _ = bg_tx.send(BackgroundEvent::Preview { thread_id, preview });
+        }
+        PickerLoadRequest::Transcript { thread_id } => {
+            let transcript = read_app_server_thread(&request_handle, thread_id)
+                .await
+                .map(|thread| thread_to_transcript_cells(&thread, raw_reasoning_visibility));
+            let _ = bg_tx.send(BackgroundEvent::Transcript {
+                thread_id,
+                transcript,
+            });
+        }
+    }
+}
+
 async fn load_app_server_page(
-    app_server: &mut AppServerSession,
+    request_handle: &AppServerRequestHandle,
     cursor: Option<String>,
     cwd_filter: Option<&Path>,
     provider_filter: ProviderFilter,
@@ -231,15 +304,18 @@ async fn load_app_server_page(
     include_non_interactive: bool,
     lookup_mode: ThreadListLookupMode,
 ) -> io::Result<PickerPage> {
-    let response = app_server
-        .thread_list(thread_list_params(
-            cursor,
-            cwd_filter,
-            provider_filter,
-            sort_key,
-            include_non_interactive,
-            lookup_mode,
-        ))
+    let response: ThreadListResponse = request_handle
+        .request_typed(ClientRequest::ThreadList {
+            request_id: RequestId::String(format!("resume-picker-thread-list-{}", Uuid::new_v4())),
+            params: thread_list_params(
+                cursor,
+                cwd_filter,
+                provider_filter,
+                sort_key,
+                include_non_interactive,
+                lookup_mode,
+            ),
+        })
         .await
         .map_err(io::Error::other)?;
     let num_scanned_files = response.data.len();
@@ -254,6 +330,23 @@ async fn load_app_server_page(
         num_scanned_files,
         reached_scan_cap: false,
     })
+}
+
+async fn read_app_server_thread(
+    request_handle: &AppServerRequestHandle,
+    thread_id: ThreadId,
+) -> io::Result<Thread> {
+    let response: ThreadReadResponse = request_handle
+        .request_typed(ClientRequest::ThreadRead {
+            request_id: RequestId::String(format!("resume-picker-thread-read-{}", Uuid::new_v4())),
+            params: ThreadReadParams {
+                thread_id: thread_id.to_string(),
+                include_turns: true,
+            },
+        })
+        .await
+        .map_err(io::Error::other)?;
+    Ok(response.thread)
 }
 
 fn row_from_app_server_thread(thread: Thread) -> Option<Row> {
