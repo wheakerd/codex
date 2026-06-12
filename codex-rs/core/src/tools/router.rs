@@ -13,6 +13,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 use codex_tools::DiscoverableTool;
+use codex_tools::FUNCTIONS_NAMESPACE;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolName;
@@ -102,7 +103,11 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                let tool_name = ToolName::new(namespace, name);
+                let tool_name = if namespace.as_deref() == Some(FUNCTIONS_NAMESPACE) {
+                    ToolName::plain(name)
+                } else {
+                    ToolName::new(namespace, name)
+                };
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,

@@ -324,7 +324,7 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         model: "gpt-test".into(),
         instructions: "Say hi".into(),
         input: Vec::new(),
-        tools: Vec::new(),
+        tools: Some(Vec::new()),
         tool_choice: "auto".into(),
         parallel_tool_calls: false,
         reasoning: None,
@@ -419,13 +419,16 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
     let request = ResponsesApiRequest {
         model: "gpt-test".into(),
         instructions: "Say hi".into(),
-        input: vec![ResponseItem::Message {
-            id: Some("msg_1".into()),
-            role: "user".into(),
-            content: vec![ContentItem::InputText { text: "hi".into() }],
-            phase: None,
-        }],
-        tools: Vec::new(),
+        input: vec![
+            ResponseItem::Message {
+                id: Some("msg_1".into()),
+                role: "user".into(),
+                content: vec![ContentItem::InputText { text: "hi".into() }],
+                phase: None,
+            }
+            .into(),
+        ],
+        tools: Some(Vec::new()),
         tool_choice: "auto".into(),
         parallel_tool_calls: false,
         reasoning: None,

@@ -47,6 +47,7 @@ use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
+use codex_api::ResponsesApiInputItem;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesClient as ApiResponsesClient;
 use codex_api::ResponsesOptions as ApiResponsesOptions;
@@ -73,6 +74,7 @@ use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -84,6 +86,7 @@ use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
+use codex_tools::create_tools_json_for_responses_lite;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -721,9 +724,35 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
-        let instructions = &prompt.base_instructions.text;
-        let input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
-        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut input = prompt
+            .get_formatted_input_for_request(model_info.use_responses_lite)
+            .into_iter()
+            .map(ResponsesApiInputItem::from)
+            .collect::<Vec<_>>();
+        let (instructions, tools) = if model_info.use_responses_lite {
+            let additional_tools = create_tools_json_for_responses_lite(&prompt.tools)?;
+            let mut prefix = vec![ResponsesApiInputItem::additional_tools(additional_tools)];
+            if !prompt.base_instructions.text.is_empty() {
+                prefix.push(
+                    ResponseItem::Message {
+                        id: None,
+                        role: "developer".to_string(),
+                        content: vec![ContentItem::InputText {
+                            text: prompt.base_instructions.text.clone(),
+                        }],
+                        phase: None,
+                    }
+                    .into(),
+                );
+            }
+            input.splice(0..0, prefix);
+            (String::new(), None)
+        } else {
+            (
+                prompt.base_instructions.text.clone(),
+                Some(create_tools_json_for_responses_api(&prompt.tools)?),
+            )
+        };
         let reasoning = Self::build_reasoning(model_info, effort, summary);
         let include = if reasoning.is_some() {
             vec!["reasoning.encrypted_content".to_string()]
@@ -750,7 +779,7 @@ impl ModelClient {
         let service_tier = model_info.service_tier_for_request(service_tier);
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
-            instructions: instructions.clone(),
+            instructions,
             input,
             tools,
             tool_choice: "auto".to_string(),
@@ -979,7 +1008,7 @@ impl ModelClientSession {
         request: &ResponsesApiRequest,
         last_response: Option<&LastResponse>,
         allow_empty_delta: bool,
-    ) -> Option<Vec<ResponseItem>> {
+    ) -> Option<Vec<ResponsesApiInputItem>> {
         // Checks whether the current request is an incremental extension of the previous request.
         // We only reuse an incremental input delta when non-input request fields are unchanged and
         // `input` is a strict
@@ -999,7 +1028,13 @@ impl ModelClientSession {
 
         let mut baseline = previous_request.input.clone();
         if let Some(last_response) = last_response {
-            baseline.extend(last_response.items_added.clone());
+            baseline.extend(
+                last_response
+                    .items_added
+                    .iter()
+                    .cloned()
+                    .map(ResponsesApiInputItem::from),
+            );
         }
 
         let baseline_len = baseline.len();

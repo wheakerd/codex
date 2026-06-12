@@ -1559,6 +1559,81 @@ async fn responses_websocket_uses_incremental_create_on_prefix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_websocket_reuses_only_matching_input_prefix() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![
+        vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "assistant output"),
+            ev_completed("resp-1"),
+        ],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+        vec![ev_response_created("resp-3"), ev_completed("resp-3")],
+    ]])
+    .await;
+
+    let harness = websocket_harness(&server).await;
+    let mut model_info = harness.model_info.clone();
+    model_info.use_responses_lite = true;
+    let mut client_session = harness.client.new_session();
+    let prompt_one = prompt_with_input(vec![message_item("hello")]);
+    let prompt_two = prompt_with_input(vec![
+        message_item("hello"),
+        assistant_message_item("msg-1", "assistant output"),
+        message_item("second"),
+    ]);
+    let mut prompt_three = prompt_with_input(vec![
+        message_item("hello"),
+        assistant_message_item("msg-1", "assistant output"),
+        message_item("second"),
+        message_item("third"),
+    ]);
+    prompt_three.base_instructions = BaseInstructions {
+        text: "updated instructions".to_string(),
+    };
+
+    for (prompt, response_id) in [
+        (&prompt_one, "resp-1"),
+        (&prompt_two, "resp-2"),
+        (&prompt_three, "resp-3"),
+    ] {
+        stream_until_complete_with_model_info(
+            &mut client_session,
+            &harness,
+            prompt,
+            &model_info,
+            response_id,
+        )
+        .await;
+    }
+
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 3);
+    let first = connection[0].body_json();
+    let second = connection[1].body_json();
+    let third = connection[2].body_json();
+
+    assert_eq!(first["input"][0]["type"], "additional_tools");
+    assert_eq!(first["input"][1]["role"], "developer");
+    assert_eq!(first.get("instructions"), None);
+    assert_eq!(first.get("tools"), None);
+    assert_eq!(second["previous_response_id"], "resp-1");
+    assert_eq!(
+        second["input"],
+        serde_json::to_value(&prompt_two.input[2..]).expect("serialize incremental items")
+    );
+    assert_eq!(third.get("previous_response_id"), None);
+    assert_eq!(third["input"][0]["type"], "additional_tools");
+    assert_eq!(
+        third["input"][1]["content"][0]["text"],
+        "updated instructions"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_forwards_turn_metadata_on_initial_and_incremental_create() {
     skip_if_no_network!();
 
