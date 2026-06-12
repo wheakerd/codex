@@ -81,7 +81,10 @@ fn builds_permissions_from_profile() {
     let text = instructions.body();
     assert!(text.contains("`sandbox_mode` is `workspace-write`"));
     assert!(text.contains("Network access is enabled."));
-    assert!(text.contains(writable_root.to_string_lossy().as_ref()));
+    assert!(text.contains(
+        "The writable roots are listed in the `<filesystem>` section of `<environment_context>`."
+    ));
+    assert!(!text.contains(writable_root.to_string_lossy().as_ref()));
 }
 
 #[test]

@@ -259,21 +259,13 @@ fn sandbox_text(mode: SandboxMode, network_access: NetworkAccess) -> String {
 }
 
 fn writable_roots_text(writable_roots: Option<Vec<WritableRoot>>) -> Option<String> {
-    let mut roots = writable_roots?;
-    if roots.is_empty() {
+    if writable_roots?.is_empty() {
         return None;
     }
-    roots.sort_by(|left, right| left.root.as_path().cmp(right.root.as_path()));
-
-    let roots_list: Vec<String> = roots
-        .iter()
-        .map(|r| format!("`{}`", r.root.to_string_lossy()))
-        .collect();
-    Some(if roots_list.len() == 1 {
-        format!(" The writable root is {}.", roots_list[0])
-    } else {
-        format!(" The writable roots are {}.", roots_list.join(", "))
-    })
+    Some(
+        "The writable roots are listed in the `<filesystem>` section of `<environment_context>`."
+            .to_string(),
+    )
 }
 
 fn denied_reads_text(file_system_policy: &FileSystemSandboxPolicy, cwd: &Path) -> Option<String> {
