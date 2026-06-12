@@ -5,6 +5,7 @@ use crate::plugins::test_support::write_file;
 use crate::plugins::test_support::write_openai_curated_marketplace;
 use crate::plugins::test_support::write_plugins_feature_config;
 use codex_core_plugins::OPENAI_BUNDLED_MARKETPLACE_NAME;
+use codex_core_plugins::PluginCacheInvalidation;
 use codex_core_plugins::PluginInstallRequest;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
@@ -127,7 +128,7 @@ async fn list_tool_suggest_discoverable_plugins_filters_by_loaded_plugin_apps() 
 }
 
 #[tokio::test]
-async fn list_tool_suggest_discoverable_plugins_materializes_metadata_until_catalog_clear() {
+async fn list_tool_suggest_discoverable_plugins_refreshes_metadata_when_sources_change() {
     let first_app_id = "connector_first";
     let second_app_id = "connector_second";
     let codex_home = tempdir().expect("tempdir should succeed");
@@ -188,7 +189,7 @@ async fn list_tool_suggest_discoverable_plugins_materializes_metadata_until_cata
         Vec::<DiscoverablePluginInfo>::new(),
     );
 
-    plugins_manager.clear_cache();
+    plugins_manager.clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
     assert_eq!(
         list_discoverable_plugins_with_manager_and_auth(
             &config,
@@ -201,7 +202,7 @@ async fn list_tool_suggest_discoverable_plugins_materializes_metadata_until_cata
         Vec::<DiscoverablePluginInfo>::new(),
     );
 
-    plugins_manager.clear_tool_suggest_metadata_catalog();
+    plugins_manager.clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
     assert_eq!(
         list_discoverable_plugins_with_manager_and_auth(
             &config,

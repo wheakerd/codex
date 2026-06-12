@@ -37,6 +37,7 @@ use codex_config::MatcherGroup as CoreMatcherGroup;
 use codex_config::ResidencyRequirement as CoreResidencyRequirement;
 use codex_config::SandboxModeRequirement as CoreSandboxModeRequirement;
 use codex_core::ThreadManager;
+use codex_core_plugins::PluginCacheInvalidation;
 use codex_features::canonical_feature_for_key;
 use codex_features::feature_for_key;
 use codex_model_provider::create_model_provider;
@@ -168,7 +169,9 @@ impl ConfigRequestProcessor {
     }
 
     pub(crate) async fn handle_config_mutation(&self) {
-        self.thread_manager.plugins_manager().clear_cache();
+        self.thread_manager
+            .plugins_manager()
+            .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
         self.thread_manager.skills_manager().clear_cache();
     }
 

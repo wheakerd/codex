@@ -471,7 +471,9 @@ impl PluginRequestProcessor {
         config_manager: ConfigManager,
     ) {
         tokio::spawn(async move {
-            thread_manager.plugins_manager().clear_cache();
+            thread_manager
+                .plugins_manager()
+                .clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
             thread_manager.skills_manager().clear_cache();
             if thread_manager.list_thread_ids().await.is_empty() {
                 return;
@@ -481,7 +483,9 @@ impl PluginRequestProcessor {
     }
 
     fn clear_plugin_related_caches(&self) {
-        self.thread_manager.plugins_manager().clear_cache();
+        self.thread_manager
+            .plugins_manager()
+            .clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
         self.thread_manager.skills_manager().clear_cache();
     }
 

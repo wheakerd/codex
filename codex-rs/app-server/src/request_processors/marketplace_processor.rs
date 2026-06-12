@@ -64,8 +64,7 @@ impl MarketplaceRequestProcessor {
         })?;
         self.thread_manager
             .plugins_manager()
-            .clear_tool_suggest_metadata_catalog();
-        self.thread_manager.plugins_manager().clear_cache();
+            .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
         Ok(MarketplaceRemoveResponse {
             marketplace_name: outcome.marketplace_name,
             installed_root: outcome.removed_installed_root,
@@ -124,8 +123,7 @@ impl MarketplaceRequestProcessor {
         })?;
         self.thread_manager
             .plugins_manager()
-            .clear_tool_suggest_metadata_catalog();
-        self.thread_manager.plugins_manager().clear_cache();
+            .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
         Ok(MarketplaceAddResponse {
             marketplace_name: outcome.marketplace_name,
             installed_root: outcome.installed_root,

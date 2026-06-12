@@ -21,8 +21,8 @@ type ToolSuggestMetadataEntry = Result<PluginCapabilitySummary, String>;
 
 /// Materialized source-derived plugin metadata for tool suggestions.
 ///
-/// Eligibility inputs remain live in `discoverable`; ordinary config changes retain these entries,
-/// while plugin source and marketplace catalog changes invalidate them.
+/// Eligibility inputs remain live in `discoverable`; source-change invalidation clears these
+/// entries so marketplace updates cannot leave stale suggestions behind.
 pub(crate) struct ToolSuggestMetadataCatalog {
     state: RwLock<ToolSuggestMetadataCatalogState>,
     load_semaphore: Semaphore,
