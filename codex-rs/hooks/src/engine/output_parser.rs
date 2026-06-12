@@ -1,3 +1,13 @@
+use codex_protocol::protocol::HookEventName;
+
+use super::command_runner::CommandRunResult;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AsyncInformationalOutput {
+    pub additional_context: Option<String>,
+    pub system_message: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct UniversalOutput {
     pub continue_processing: bool,
@@ -290,6 +300,79 @@ pub(crate) fn parse_stop(stdout: &str) -> Option<StopOutput> {
     ))
 }
 
+/// Extracts only informational fields from a successful async command result.
+///
+/// Structured output is parsed through an async-only informational view, so
+/// blocking decisions, steering, updated input, and every other control field
+/// are ignored. Plain stdout remains context only for events that support it.
+pub(crate) fn parse_async_informational(
+    event_name: HookEventName,
+    result: &CommandRunResult,
+) -> Option<AsyncInformationalOutput> {
+    if result.error.is_some() || result.exit_code != Some(0) {
+        return None;
+    }
+    let stdout = result.stdout.trim();
+    if stdout.is_empty() {
+        return None;
+    }
+
+    let (supports_structured_context, supports_plain_context) = match event_name {
+        HookEventName::SessionStart
+        | HookEventName::SubagentStart
+        | HookEventName::UserPromptSubmit => (true, true),
+        HookEventName::PreToolUse | HookEventName::PostToolUse => (true, false),
+        HookEventName::PermissionRequest
+        | HookEventName::PreCompact
+        | HookEventName::PostCompact
+        | HookEventName::SubagentStop
+        | HookEventName::Stop => (false, false),
+    };
+
+    if let Some(wire) = parse_json::<AsyncInformationalOutputWire>(stdout) {
+        let additional_context = if supports_structured_context {
+            wire.hook_specific_output
+                .and_then(|output| output.additional_context)
+        } else {
+            None
+        };
+        let parsed = AsyncInformationalOutput {
+            additional_context,
+            system_message: wire.system_message,
+        };
+        return (parsed.additional_context.is_some() || parsed.system_message.is_some())
+            .then_some(parsed);
+    }
+    if looks_like_json(stdout) {
+        return None;
+    }
+
+    supports_plain_context.then(|| AsyncInformationalOutput {
+        additional_context: Some(stdout.to_string()),
+        system_message: None,
+    })
+}
+
+/// Informational fields accepted from async command output.
+///
+/// Unknown fields are intentionally ignored because async hooks cannot apply
+/// control behavior to the operation that launched them.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AsyncInformationalOutputWire {
+    #[serde(default)]
+    system_message: Option<String>,
+    #[serde(default)]
+    hook_specific_output: Option<AsyncInformationalHookSpecificOutputWire>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AsyncInformationalHookSpecificOutputWire {
+    #[serde(default)]
+    additional_context: Option<String>,
+}
+
 pub(crate) fn parse_subagent_stop(stdout: &str) -> Option<StopOutput> {
     let wire: SubagentStopCommandOutputWire = parse_json(stdout)?;
     Some(stop_output(
@@ -515,10 +598,88 @@ fn trimmed_reason(reason: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use codex_protocol::protocol::HookEventName;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
+    use super::AsyncInformationalOutput;
+    use super::CommandRunResult;
+    use super::parse_async_informational;
     use super::parse_permission_request;
+
+    fn successful_result(stdout: String) -> CommandRunResult {
+        CommandRunResult {
+            started_at: 0,
+            completed_at: 0,
+            duration_ms: 0,
+            exit_code: Some(0),
+            stdout,
+            stderr: String::new(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn async_output_keeps_information_and_ignores_control_fields() {
+        let result = successful_result(
+            json!({
+                "continue": false,
+                "stopReason": "ignored",
+                "systemMessage": "shown later",
+                "decision": "block",
+                "reason": "ignored",
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "used later",
+                    "updatedInput": {"ignored": true}
+                }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(
+            parse_async_informational(HookEventName::UserPromptSubmit, &result),
+            Some(AsyncInformationalOutput {
+                additional_context: Some("used later".to_string()),
+                system_message: Some("shown later".to_string()),
+            })
+        );
+        assert_eq!(
+            parse_async_informational(HookEventName::PreToolUse, &result),
+            Some(AsyncInformationalOutput {
+                additional_context: Some("used later".to_string()),
+                system_message: Some("shown later".to_string()),
+            })
+        );
+        assert_eq!(
+            parse_async_informational(HookEventName::Stop, &result),
+            Some(AsyncInformationalOutput {
+                additional_context: None,
+                system_message: Some("shown later".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn async_plain_stdout_is_only_context_for_events_that_already_support_it() {
+        let result = successful_result("plain output".to_string());
+
+        assert_eq!(
+            parse_async_informational(HookEventName::UserPromptSubmit, &result),
+            Some(AsyncInformationalOutput {
+                additional_context: Some("plain output".to_string()),
+                system_message: None,
+            })
+        );
+        assert_eq!(
+            parse_async_informational(HookEventName::PreToolUse, &result),
+            None
+        );
+        assert_eq!(
+            parse_async_informational(HookEventName::Stop, &result),
+            None
+        );
+    }
 
     #[test]
     fn permission_request_rejects_reserved_updated_input_field() {
