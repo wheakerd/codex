@@ -1708,6 +1708,7 @@ async fn record_conversation_items_stamps_missing_turn_id_and_preserves_existing
         .filter_map(|item| match item {
             RolloutItem::ResponseItem(item) => Some(item.clone()),
             RolloutItem::SessionMeta(_)
+            | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::EventMsg(_)
             | RolloutItem::Compacted(_)
             | RolloutItem::TurnContext(_) => None,
