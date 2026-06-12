@@ -2012,7 +2012,7 @@ approval_mode = "approve"
         .await
         .expect("load config");
     turn_context.config = Arc::new(config);
-    session.services.plugins_manager.clear_runtime_state_cache();
+    session.services.plugins_manager.clear_cache();
 
     assert_eq!(
         custom_mcp_tool_approval_mode(&session, &turn_context, "sample", "read").await,
@@ -2186,7 +2186,7 @@ enabled = true
         .await
         .expect("load config");
     turn_context.config = Arc::new(config);
-    session.services.plugins_manager.clear_runtime_state_cache();
+    session.services.plugins_manager.clear_cache();
     let key = McpToolApprovalKey {
         server: "sample".to_string(),
         connector_id: None,

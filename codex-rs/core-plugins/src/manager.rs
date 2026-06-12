@@ -480,17 +480,8 @@ impl PluginsManager {
 
     /// Clears all plugin caches, including source-derived tool-suggest metadata.
     pub fn clear_cache(&self) {
-        self.clear_runtime_state_cache();
-        self.tool_suggest_metadata_catalog.clear();
-    }
-
-    /// Clears runtime projections while retaining source-derived tool-suggest metadata.
-    ///
-    /// Use this only when marketplace membership and plugin artifacts stayed stable. Runtime-only
-    /// changes can arrive after startup prewarm, so retaining the metadata catalog avoids repeating
-    /// the full source scan on the first turn.
-    pub fn clear_runtime_state_cache(&self) {
         self.clear_enabled_outcome_cache();
+        self.tool_suggest_metadata_catalog.clear();
         let mut featured_plugin_ids_cache = match self.featured_plugin_ids_cache.write() {
             Ok(cache) => cache,
             Err(err) => err.into_inner(),
@@ -1493,11 +1484,11 @@ impl PluginsManager {
             ) {
                 Ok(cache_refreshed) => {
                     if cache_refreshed {
-                        self.clear_runtime_state_cache();
+                        self.clear_cache();
                     }
                 }
                 Err(err) => {
-                    self.clear_runtime_state_cache();
+                    self.clear_cache();
                     outcome.errors.push(ConfiguredMarketplaceUpgradeError {
                         marketplace_name: marketplace_name
                             .unwrap_or("all configured marketplaces")
@@ -1682,11 +1673,11 @@ impl PluginsManager {
                         ) {
                             Ok(cache_refreshed) => {
                                 if cache_refreshed {
-                                    manager.clear_runtime_state_cache();
+                                    manager.clear_cache();
                                 }
                             }
                             Err(err) => {
-                                manager.clear_runtime_state_cache();
+                                manager.clear_cache();
                                 CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
                                 warn!("failed to refresh curated plugin cache after sync: {err}");
                             }

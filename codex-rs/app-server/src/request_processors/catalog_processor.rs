@@ -702,9 +702,7 @@ impl CatalogRequestProcessor {
             .apply()
             .await
             .map(|()| {
-                self.thread_manager
-                    .plugins_manager()
-                    .clear_runtime_state_cache();
+                self.thread_manager.plugins_manager().clear_cache();
                 self.thread_manager.skills_manager().clear_cache();
                 SkillsConfigWriteResponse {
                     effective_enabled: enabled,

@@ -188,19 +188,6 @@ async fn list_tool_suggest_discoverable_plugins_refreshes_metadata_when_sources_
         Vec::<DiscoverablePluginInfo>::new(),
     );
 
-    plugins_manager.clear_runtime_state_cache();
-    assert_eq!(
-        list_discoverable_plugins_with_manager_and_auth(
-            &config,
-            &plugins_manager,
-            /*auth*/ None,
-            &[second_app_id.to_string()],
-        )
-        .await
-        .unwrap(),
-        Vec::<DiscoverablePluginInfo>::new(),
-    );
-
     plugins_manager.clear_cache();
     assert_eq!(
         list_discoverable_plugins_with_manager_and_auth(
