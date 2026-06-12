@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 pub(crate) fn create_request_plugin_install_tool() -> ToolSpec {
     let description = format!(
-        "# Request plugin/connector install\n\nUse this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns one or more plugins or connectors that exactly match the user's explicit request.\n\nDo not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. For a single target, pass the returned `tool_type` through directly and pass the returned `id` as `tool_id`. For multiple exact targets, make one call with `entries` for a flat list or `categories` when alternatives are organized by category; every entry's `tool_id` must be an exact `id` returned by `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}`.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
+        "# Request plugin/connector install\n\nUse this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns one or more plugins or connectors that exactly match the user's explicit request.\n\nDo not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target. Pass only exact `tool_type` and `tool_id` values returned by `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}`; Codex resolves picker labels and metadata from that known tool list.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools."
     );
 
     ToolSpec::Function(ResponsesApiTool {
@@ -17,13 +17,9 @@ pub(crate) fn create_request_plugin_install_tool() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::one_of(
-            vec![
-                single_target_schema(),
-                flat_picker_schema(),
-                categorized_picker_schema(),
-            ],
+            vec![flat_picker_schema(), categorized_picker_schema()],
             Some(
-                "Use the single-target shape for one install card, the flat picker shape for a list, or the categorized picker shape for grouped exact install candidates."
+                "Use the flat picker shape for one or more exact targets, or the categorized picker shape for grouped exact install candidates."
                     .to_string(),
             ),
         ),
@@ -31,41 +27,10 @@ pub(crate) fn create_request_plugin_install_tool() -> ToolSpec {
     })
 }
 
-fn single_target_schema() -> JsonSchema {
-    JsonSchema::object(
-        BTreeMap::from([
-            (
-                "tool_type".to_string(),
-                tool_type_schema("Type of discoverable tool to suggest.".to_string()),
-            ),
-            ("action_type".to_string(), install_action_schema()),
-            (
-                "tool_id".to_string(),
-                JsonSchema::string(Some("Connector or plugin id to suggest.".to_string())),
-            ),
-            ("suggest_reason".to_string(), suggest_reason_schema()),
-        ]),
-        Some(vec![
-            "tool_type".to_string(),
-            "action_type".to_string(),
-            "tool_id".to_string(),
-            "suggest_reason".to_string(),
-        ]),
-        Some(false.into()),
-    )
-}
-
 fn flat_picker_schema() -> JsonSchema {
     JsonSchema::object(
         BTreeMap::from([
             ("action_type".to_string(), install_action_schema()),
-            ("suggest_reason".to_string(), suggest_reason_schema()),
-            (
-                "title".to_string(),
-                JsonSchema::string(Some(
-                    "Optional title for the flat multi-tool install picker.".to_string(),
-                )),
-            ),
             (
                 "entries".to_string(),
                 JsonSchema::array(
@@ -74,11 +39,7 @@ fn flat_picker_schema() -> JsonSchema {
                 ),
             ),
         ]),
-        Some(vec![
-            "action_type".to_string(),
-            "suggest_reason".to_string(),
-            "entries".to_string(),
-        ]),
+        Some(vec!["action_type".to_string(), "entries".to_string()]),
         Some(false.into()),
     )
 }
@@ -87,13 +48,6 @@ fn categorized_picker_schema() -> JsonSchema {
     JsonSchema::object(
         BTreeMap::from([
             ("action_type".to_string(), install_action_schema()),
-            ("suggest_reason".to_string(), suggest_reason_schema()),
-            (
-                "title".to_string(),
-                JsonSchema::string(Some(
-                    "Optional title for the categorized multi-tool install picker.".to_string(),
-                )),
-            ),
             (
                 "categories".to_string(),
                 JsonSchema::array(
@@ -102,11 +56,7 @@ fn categorized_picker_schema() -> JsonSchema {
                 ),
             ),
         ]),
-        Some(vec![
-            "action_type".to_string(),
-            "suggest_reason".to_string(),
-            "categories".to_string(),
-        ]),
+        Some(vec!["action_type".to_string(), "categories".to_string()]),
         Some(false.into()),
     )
 }
@@ -115,12 +65,6 @@ fn picker_entry_schema() -> JsonSchema {
     JsonSchema::object(
         BTreeMap::from([
             (
-                "id".to_string(),
-                JsonSchema::string(Some(
-                    "Stable entry id for this picker row. Use a concise unique id.".to_string(),
-                )),
-            ),
-            (
                 "tool_id".to_string(),
                 JsonSchema::string(Some(
                     "Exact connector or plugin id returned by list_available_plugins_to_install."
@@ -128,28 +72,11 @@ fn picker_entry_schema() -> JsonSchema {
                 )),
             ),
             (
-                "tool_name".to_string(),
-                JsonSchema::string(Some(
-                    "Display name returned by list_available_plugins_to_install.".to_string(),
-                )),
-            ),
-            (
                 "tool_type".to_string(),
                 tool_type_schema("Type returned by list_available_plugins_to_install.".to_string()),
             ),
-            (
-                "description".to_string(),
-                JsonSchema::string(Some(
-                    "Optional short picker-row description for this exact candidate.".to_string(),
-                )),
-            ),
         ]),
-        Some(vec![
-            "id".to_string(),
-            "tool_id".to_string(),
-            "tool_name".to_string(),
-            "tool_type".to_string(),
-        ]),
+        Some(vec!["tool_id".to_string(), "tool_type".to_string()]),
         Some(false.into()),
     )
 }
@@ -158,27 +85,8 @@ fn picker_category_schema() -> JsonSchema {
     JsonSchema::object(
         BTreeMap::from([
             (
-                "id".to_string(),
-                JsonSchema::string(Some(
-                    "Stable category id for matching picker responses.".to_string(),
-                )),
-            ),
-            (
                 "title".to_string(),
                 JsonSchema::string(Some("User-facing category title.".to_string())),
-            ),
-            (
-                "required".to_string(),
-                JsonSchema::boolean(Some(
-                    "Whether the user must install enough entries in this category before continuing."
-                        .to_string(),
-                )),
-            ),
-            (
-                "min_installed".to_string(),
-                JsonSchema::integer(Some(
-                    "Minimum ready entries required when this category is required.".to_string(),
-                )),
             ),
             (
                 "entries".to_string(),
@@ -188,11 +96,7 @@ fn picker_category_schema() -> JsonSchema {
                 ),
             ),
         ]),
-        Some(vec![
-            "id".to_string(),
-            "title".to_string(),
-            "entries".to_string(),
-        ]),
+        Some(vec!["title".to_string(), "entries".to_string()]),
         Some(false.into()),
     )
 }
@@ -208,13 +112,6 @@ fn install_action_schema() -> JsonSchema {
     )
 }
 
-fn suggest_reason_schema() -> JsonSchema {
-    JsonSchema::string(Some(
-        "Concise one-line user-facing reason why this plugin or connector can help with the current request."
-            .to_string(),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,7 +123,7 @@ mod tests {
         let expected_description = concat!(
             "# Request plugin/connector install\n\n",
             "Use this tool only after `list_available_plugins_to_install` returns one or more plugins or connectors that exactly match the user's explicit request.\n\n",
-            "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. For a single target, pass the returned `tool_type` through directly and pass the returned `id` as `tool_id`. For multiple exact targets, make one call with `entries` for a flat list or `categories` when alternatives are organized by category; every entry's `tool_id` must be an exact `id` returned by `list_available_plugins_to_install`.\n\n",
+            "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. Make one call with `entries` for a flat list or `categories` when alternatives are organized by category; use one flat `entries` item for a single target. Pass only exact `tool_type` and `tool_id` values returned by `list_available_plugins_to_install`; Codex resolves picker labels and metadata from that known tool list.\n\n",
             "IMPORTANT: DO NOT call this tool in parallel with other tools.",
         );
 
@@ -238,13 +135,9 @@ mod tests {
                 strict: false,
                 defer_loading: None,
                 parameters: JsonSchema::one_of(
-                    vec![
-                        single_target_schema(),
-                        flat_picker_schema(),
-                        categorized_picker_schema(),
-                    ],
+                    vec![flat_picker_schema(), categorized_picker_schema()],
                     Some(
-                        "Use the single-target shape for one install card, the flat picker shape for a list, or the categorized picker shape for grouped exact install candidates."
+                        "Use the flat picker shape for one or more exact targets, or the categorized picker shape for grouped exact install candidates."
                             .to_string(),
                     ),
                 ),
