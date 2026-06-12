@@ -977,19 +977,12 @@ impl ResponseItem {
 
     /// Stamps the item with `turn_id` unless it already has a non-empty turn ID.
     pub fn stamp_turn_id_if_missing(&mut self, turn_id: &str) {
-        if turn_id.is_empty() {
+        if turn_id.is_empty() || self.turn_id().is_some() {
             return;
         }
         let Some(metadata) = self.metadata_mut() else {
             return;
         };
-        if metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get(RESPONSE_ITEM_TURN_ID_METADATA_KEY))
-            .is_some_and(|turn_id| !turn_id.is_empty())
-        {
-            return;
-        }
         metadata.get_or_insert_with(BTreeMap::new).insert(
             RESPONSE_ITEM_TURN_ID_METADATA_KEY.to_string(),
             turn_id.to_string(),

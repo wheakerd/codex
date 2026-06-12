@@ -2028,8 +2028,7 @@ async fn resumed_history_injects_initial_context_on_first_context_update_only() 
     session
         .record_context_updates_and_set_reference_context_item(&turn_context)
         .await;
-    let mut initial_context = session.build_initial_context(&turn_context).await;
-    stamp_missing_turn_ids(&mut initial_context, &turn_context.sub_id);
+    let initial_context = session.build_initial_context(&turn_context).await;
     expected.extend(initial_context);
     let history_after_seed = session.clone_history().await;
     assert_eq!(expected, history_after_seed.raw_items());
@@ -3005,10 +3004,9 @@ async fn thread_rollback_clears_history_when_num_turns_exceeds_existing_turns() 
 async fn thread_rollback_fails_without_persisted_thread_history() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
-    let mut initial_context = sess.build_initial_context(tc.as_ref()).await;
+    let initial_context = sess.build_initial_context(tc.as_ref()).await;
     sess.record_conversation_items(tc.as_ref(), &initial_context)
         .await;
-    stamp_missing_turn_ids(&mut initial_context, &tc.sub_id);
 
     handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
 
@@ -3395,10 +3393,9 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
 async fn thread_rollback_fails_when_turn_in_progress() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
-    let mut initial_context = sess.build_initial_context(tc.as_ref()).await;
+    let initial_context = sess.build_initial_context(tc.as_ref()).await;
     sess.record_conversation_items(tc.as_ref(), &initial_context)
         .await;
-    stamp_missing_turn_ids(&mut initial_context, &tc.sub_id);
 
     *sess.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
     handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
@@ -3417,10 +3414,9 @@ async fn thread_rollback_fails_when_turn_in_progress() {
 async fn thread_rollback_fails_when_num_turns_is_zero() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
-    let mut initial_context = sess.build_initial_context(tc.as_ref()).await;
+    let initial_context = sess.build_initial_context(tc.as_ref()).await;
     sess.record_conversation_items(tc.as_ref(), &initial_context)
         .await;
-    stamp_missing_turn_ids(&mut initial_context, &tc.sub_id);
 
     handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 0).await;
 
@@ -8178,8 +8174,7 @@ async fn build_initial_context_uses_previous_turn_settings_for_realtime_end() {
     session
         .set_previous_turn_settings(Some(previous_turn_settings))
         .await;
-    let mut initial_context = session.build_initial_context(&turn_context).await;
-    stamp_missing_turn_ids(&mut initial_context, &turn_context.sub_id);
+    let initial_context = session.build_initial_context(&turn_context).await;
     let developer_texts = developer_input_texts(&initial_context);
     assert!(
         developer_texts
@@ -8284,8 +8279,7 @@ async fn record_context_updates_and_set_reference_context_item_injects_full_cont
         .record_context_updates_and_set_reference_context_item(&turn_context)
         .await;
     let history = session.clone_history().await;
-    let mut initial_context = session.build_initial_context(&turn_context).await;
-    stamp_missing_turn_ids(&mut initial_context, &turn_context.sub_id);
+    let initial_context = session.build_initial_context(&turn_context).await;
     assert_eq!(history.raw_items().to_vec(), initial_context);
 
     let current_context = session.reference_context_item().await;
@@ -8332,8 +8326,7 @@ async fn record_context_updates_and_set_reference_context_item_reinjects_full_co
 
     let history = session.clone_history().await;
     let mut expected_history = vec![compacted_summary];
-    let mut initial_context = session.build_initial_context(&turn_context).await;
-    stamp_missing_turn_ids(&mut initial_context, &turn_context.sub_id);
+    let initial_context = session.build_initial_context(&turn_context).await;
     expected_history.extend(initial_context);
     assert_eq!(history.raw_items().to_vec(), expected_history);
 }

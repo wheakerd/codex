@@ -294,10 +294,9 @@ async fn run_compact_task_inner_impl(
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let user_messages = collect_user_message_items(history_items);
+    let user_messages = collect_user_messages(history_items);
 
-    let mut new_history =
-        build_compacted_history_from_items(Vec::new(), &user_messages, &summary_text);
+    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         summary_item.stamp_turn_id_if_missing(&turn_context.sub_id);
     }
@@ -453,7 +452,7 @@ pub(crate) struct CompactedUserMessage {
     metadata: Option<ResponseItemMetadata>,
 }
 
-pub(crate) fn collect_user_message_items(items: &[ResponseItem]) -> Vec<CompactedUserMessage> {
+pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<CompactedUserMessage> {
     items
         .iter()
         .filter_map(|item| match crate::event_mapping::parse_turn_item(item) {
@@ -472,14 +471,6 @@ pub(crate) fn collect_user_message_items(items: &[ResponseItem]) -> Vec<Compacte
             }
             _ => None,
         })
-        .collect()
-}
-
-#[cfg(test)]
-pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
-    collect_user_message_items(items)
-        .into_iter()
-        .map(|message| message.message)
         .collect()
 }
 
@@ -544,10 +535,9 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     compacted_history
 }
 
-#[cfg(test)]
 pub(crate) fn build_compacted_history(
     initial_context: Vec<ResponseItem>,
-    user_messages: &[String],
+    user_messages: &[CompactedUserMessage],
     summary_text: &str,
 ) -> Vec<ResponseItem> {
     build_compacted_history_with_limit(
@@ -558,37 +548,7 @@ pub(crate) fn build_compacted_history(
     )
 }
 
-pub(crate) fn build_compacted_history_from_items(
-    initial_context: Vec<ResponseItem>,
-    user_messages: &[CompactedUserMessage],
-    summary_text: &str,
-) -> Vec<ResponseItem> {
-    build_compacted_history_from_items_with_limit(
-        initial_context,
-        user_messages,
-        summary_text,
-        COMPACT_USER_MESSAGE_MAX_TOKENS,
-    )
-}
-
-#[cfg(test)]
 fn build_compacted_history_with_limit(
-    history: Vec<ResponseItem>,
-    user_messages: &[String],
-    summary_text: &str,
-    max_tokens: usize,
-) -> Vec<ResponseItem> {
-    let user_messages = user_messages
-        .iter()
-        .map(|message| CompactedUserMessage {
-            message: message.clone(),
-            metadata: None,
-        })
-        .collect::<Vec<_>>();
-    build_compacted_history_from_items_with_limit(history, &user_messages, summary_text, max_tokens)
-}
-
-fn build_compacted_history_from_items_with_limit(
     mut history: Vec<ResponseItem>,
     user_messages: &[CompactedUserMessage],
     summary_text: &str,

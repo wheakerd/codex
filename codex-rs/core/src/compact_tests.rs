@@ -24,6 +24,20 @@ async fn process_compacted_history_with_test_session(
     (refreshed, initial_context)
 }
 
+fn compacted_user_message(message: &str) -> CompactedUserMessage {
+    CompactedUserMessage {
+        message: message.to_string(),
+        metadata: None,
+    }
+}
+
+fn message_texts(messages: &[CompactedUserMessage]) -> Vec<&str> {
+    messages
+        .iter()
+        .map(|message| message.message.as_str())
+        .collect()
+}
+
 fn user_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -93,7 +107,7 @@ fn collect_user_messages_extracts_user_text_only() {
 
     let collected = collect_user_messages(&items);
 
-    assert_eq!(vec!["first".to_string()], collected);
+    assert_eq!(vec!["first"], message_texts(&collected));
 }
 
 #[test]
@@ -135,7 +149,7 @@ do things
 
     let collected = collect_user_messages(&items);
 
-    assert_eq!(vec!["real user message".to_string()], collected);
+    assert_eq!(vec!["real user message"], message_texts(&collected));
 }
 
 #[test]
@@ -155,7 +169,7 @@ fn collect_user_messages_filters_legacy_warnings() {
 
     let collected = collect_user_messages(&items);
 
-    assert_eq!(vec!["real user message".to_string()], collected);
+    assert_eq!(vec!["real user message"], message_texts(&collected));
 }
 
 #[test]
@@ -166,7 +180,7 @@ fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
     let big = "word ".repeat(200);
     let history = super::build_compacted_history_with_limit(
         Vec::new(),
-        std::slice::from_ref(&big),
+        &[compacted_user_message(&big)],
         "SUMMARY",
         max_tokens,
     );
@@ -203,7 +217,7 @@ fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
 #[test]
 fn build_token_limited_compacted_history_appends_summary_message() {
     let initial_context: Vec<ResponseItem> = Vec::new();
-    let user_messages = vec!["first user message".to_string()];
+    let user_messages = vec![compacted_user_message("first user message")];
     let summary_text = "summary text";
 
     let history = build_compacted_history(initial_context, &user_messages, summary_text);
@@ -223,8 +237,8 @@ fn build_token_limited_compacted_history_appends_summary_message() {
 }
 
 #[test]
-fn build_compacted_history_from_items_preserves_user_message_metadata() {
-    let history = build_compacted_history_from_items(
+fn build_compacted_history_preserves_user_message_metadata() {
+    let history = build_compacted_history(
         Vec::new(),
         &[CompactedUserMessage {
             message: "first user message".to_string(),
