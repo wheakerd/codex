@@ -122,6 +122,7 @@ impl ExecCommandHandler {
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
+        let runtime_workspace = session.runtime_workspace_snapshot().await;
         let Some(turn_environment) =
             resolve_tool_environment(turn.as_ref(), environment_args.environment_id.as_deref())?
         else {
@@ -129,14 +130,16 @@ impl ExecCommandHandler {
                 "unified exec is unavailable in this session".to_string(),
             ));
         };
+        let base_cwd = if turn.environments.turn_environments.len() == 1 {
+            &runtime_workspace.cwd
+        } else {
+            turn_environment.cwd()
+        };
         let cwd = environment_args
             .workdir
             .as_deref()
             .filter(|workdir| !workdir.is_empty())
-            .map_or_else(
-                || turn_environment.cwd().clone(),
-                |workdir| turn_environment.cwd().join(workdir),
-            );
+            .map_or_else(|| base_cwd.clone(), |workdir| base_cwd.join(workdir));
         let environment = Arc::clone(&turn_environment.environment);
         let fs = environment.get_filesystem();
         let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &cwd)?;
@@ -270,7 +273,12 @@ impl ExecCommandHandler {
                     yield_time_ms,
                     max_output_tokens,
                     cwd,
-                    sandbox_cwd: turn_environment.cwd().clone(),
+                    sandbox_cwd: if turn.environments.turn_environments.len() == 1 {
+                        runtime_workspace.cwd
+                    } else {
+                        turn_environment.cwd().clone()
+                    },
+                    permission_profile: runtime_workspace.permission_profile,
                     environment,
                     shell_mode,
                     network: context.turn.network.clone(),

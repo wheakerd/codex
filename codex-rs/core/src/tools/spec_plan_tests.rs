@@ -613,13 +613,18 @@ async fn environment_count_controls_environment_backed_tools() {
         "exec_command",
         "apply_patch",
         "view_image",
+        "set_working_directory",
     ]);
     no_environment.assert_registered_lacks(&[
         "shell_command",
         "exec_command",
         "apply_patch",
         "view_image",
+        "set_working_directory",
     ]);
+
+    let single_environment = probe(|_| {}).await;
+    single_environment.assert_visible_contains(&["set_working_directory"]);
 
     let multiple_environments = probe(|turn| {
         duplicate_primary_environment(turn);
@@ -629,6 +634,7 @@ async fn environment_count_controls_environment_backed_tools() {
     })
     .await;
     multiple_environments.assert_visible_contains(&["exec_command", "apply_patch", "view_image"]);
+    multiple_environments.assert_visible_lacks(&["set_working_directory"]);
     assert!(has_parameter(
         multiple_environments.visible_spec("exec_command"),
         "environment_id"

@@ -143,11 +143,28 @@ impl ViewImageHandler {
                 "view_image is unavailable in this session".to_string(),
             ));
         };
-        let cwd = turn_environment.cwd().clone();
+        let runtime_workspace = session.runtime_workspace_snapshot().await;
+        let single_environment = turn.environments.turn_environments.len() == 1;
+        let cwd = if single_environment {
+            runtime_workspace.cwd.clone()
+        } else {
+            turn_environment.cwd().clone()
+        };
         let abs_path = cwd.join(path);
-        let sandbox = turn.file_system_sandbox_context(
+        let sandbox_cwd = if single_environment {
+            PathUri::from_abs_path(&cwd).map_err(|error| {
+                FunctionCallError::RespondToModel(format!(
+                    "unable to prepare filesystem sandbox for `{}`: {error}",
+                    cwd.display()
+                ))
+            })?
+        } else {
+            turn_environment.cwd_uri().clone()
+        };
+        let sandbox = turn.file_system_sandbox_context_for_permission_profile(
+            &runtime_workspace.permission_profile,
             /*additional_permissions*/ None,
-            turn_environment.cwd_uri(),
+            &sandbox_cwd,
         );
         let fs = turn_environment.environment.get_filesystem();
         let path_uri = PathUri::from_abs_path(&abs_path).map_err(|error| {

@@ -11,7 +11,9 @@ use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
 use codex_tools::TurnItemEmissionFuture;
 use codex_tools::TurnItemEmitter;
+use codex_utils_path_uri::PathUri;
 
+use crate::function_tool::FunctionCallError;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -53,7 +55,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(async move { self.0.handle(to_extension_call(&invocation).await).await })
+        Box::pin(async move {
+            let extension_call = to_extension_call(&invocation).await?;
+            self.0.handle(extension_call).await
+        })
     }
 }
 
@@ -109,15 +114,31 @@ impl TurnItemEmitter for CoreTurnItemEmitter {
     }
 }
 
-async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
+async fn to_extension_call(
+    invocation: &ToolInvocation,
+) -> Result<ExtensionToolCall, FunctionCallError> {
     let conversation_history =
         ConversationHistory::new(invocation.session.clone_history().await.into_raw_items());
+    let runtime_workspace = invocation.session.runtime_workspace_snapshot().await;
+    let single_environment = invocation.turn.environments.turn_environments.len() == 1;
     let mut environments = Vec::with_capacity(invocation.turn.environments.turn_environments.len());
     for environment in &invocation.turn.environments.turn_environments {
+        let (cwd, cwd_uri) = if single_environment {
+            let cwd = runtime_workspace.cwd.clone();
+            let cwd_uri = PathUri::from_abs_path(&cwd).map_err(|error| {
+                FunctionCallError::RespondToModel(format!(
+                    "unable to prepare extension filesystem sandbox for `{}`: {error}",
+                    cwd.display()
+                ))
+            })?;
+            (cwd, cwd_uri)
+        } else {
+            (environment.cwd().clone(), environment.cwd_uri().clone())
+        };
         let additional_permissions = apply_granted_turn_permissions(
             invocation.session.as_ref(),
             &environment.environment_id,
-            environment.cwd().as_path(),
+            cwd.as_path(),
             SandboxPermissions::UseDefault,
             /*additional_permissions*/ None,
         )
@@ -125,15 +146,19 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         .additional_permissions;
         let file_system_sandbox_context = invocation
             .turn
-            .file_system_sandbox_context(additional_permissions, environment.cwd_uri());
+            .file_system_sandbox_context_for_permission_profile(
+                &runtime_workspace.permission_profile,
+                additional_permissions,
+                &cwd_uri,
+            );
         environments.push(ToolEnvironment {
             environment_id: environment.environment_id.clone(),
-            cwd: environment.cwd().clone(),
+            cwd,
             file_system: environment.environment.get_filesystem(),
             file_system_sandbox_context,
         });
     }
-    ExtensionToolCall {
+    Ok(ExtensionToolCall {
         turn_id: invocation.turn.sub_id.clone(),
         call_id: invocation.call_id.clone(),
         tool_name: invocation.tool_name.clone(),
@@ -146,7 +171,7 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         }),
         environments,
         payload: invocation.payload.clone(),
-    }
+    })
 }
 
 #[cfg(test)]
