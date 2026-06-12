@@ -11,7 +11,6 @@ use codex_login::CodexAuth;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::openai_models::InputModality;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
@@ -84,32 +83,18 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let response_mock = responses::mount_sse_sequence(
+    let response_mock = responses::mount_sse_once(
         &server,
-        vec![
-            responses::sse(vec![
-                responses::ev_response_created("resp-1"),
-                responses::ev_function_call_with_namespace(
-                    "wait-call",
-                    "functions",
-                    "wait",
-                    r#"{"cell_id":"missing"}"#,
-                ),
-                responses::ev_completed("resp-1"),
-            ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-2"),
-                responses::ev_completed("resp-2"),
-            ]),
-        ],
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_completed("resp-1"),
+        ]),
     )
     .await;
 
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.4", |model_info| {
             model_info.use_responses_lite = true;
-            model_info.supports_parallel_tool_calls = true;
-            model_info.tool_mode = Some(ToolMode::CodeModeOnly);
         })
         .with_config(|config| {
             config.base_instructions = Some("test instructions".to_string());
@@ -118,12 +103,9 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 
     test.submit_turn("hello").await?;
 
-    let requests = response_mock.requests();
-    assert_eq!(requests.len(), 2);
-    let body = requests[0].body_json();
+    let body = response_mock.single_request().body_json();
     assert!(body.get("instructions").is_none());
     assert!(body.get("tools").is_none());
-    assert_eq!(body.get("parallel_tool_calls"), Some(&Value::Bool(false)));
 
     let input = body["input"]
         .as_array()
@@ -143,22 +125,7 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
     );
 
     let tools = additional_tools(&body)?;
-    assert!(tools.iter().all(|tool| !matches!(
-        tool.get("type").and_then(Value::as_str),
-        Some("function" | "custom")
-    )));
-    assert!(has_namespaced_tool(tools, "functions", "exec"));
-    assert!(has_namespaced_tool(tools, "functions", "wait"));
-    let functions = tools
-        .iter()
-        .find(|tool| tool.get("name").and_then(Value::as_str) == Some("functions"))
-        .context("functions namespace should be present")?;
-    assert_eq!(functions["description"], "");
-
-    assert!(
-        requests[1].body_contains_text("exec cell missing not found"),
-        "request should contain the wait handler's missing-cell output"
-    );
+    assert!(!tools.is_empty());
 
     Ok(())
 }

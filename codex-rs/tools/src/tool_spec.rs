@@ -9,9 +9,6 @@ use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLo
 use codex_protocol::config_types::WebSearchUserLocationType;
 use serde::Serialize;
 use serde_json::Value;
-use serde_json::json;
-
-pub const FUNCTIONS_NAMESPACE: &str = "functions";
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -86,36 +83,6 @@ pub fn create_tools_json_for_responses_api(
     for tool in tools {
         let json = serde_json::to_value(tool)?;
         tools_json.push(json);
-    }
-
-    Ok(tools_json)
-}
-
-pub fn create_tools_json_for_responses_lite(
-    tools: &[ToolSpec],
-) -> Result<Vec<Value>, serde_json::Error> {
-    let mut functions = Vec::new();
-    let mut tools_json = Vec::new();
-
-    for tool in tools {
-        let json = serde_json::to_value(tool)?;
-        if matches!(tool, ToolSpec::Function(_) | ToolSpec::Freeform(_)) {
-            functions.push(json);
-        } else {
-            tools_json.push(json);
-        }
-    }
-
-    if !functions.is_empty() {
-        tools_json.insert(
-            0,
-            json!({
-                "type": "namespace",
-                "name": FUNCTIONS_NAMESPACE,
-                "description": "",
-                "tools": functions,
-            }),
-        );
     }
 
     Ok(tools_json)

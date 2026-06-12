@@ -86,7 +86,6 @@ use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
-use codex_tools::create_tools_json_for_responses_lite;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -729,9 +728,9 @@ impl ModelClient {
             .into_iter()
             .map(ResponsesApiInputItem::from)
             .collect::<Vec<_>>();
+        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let (instructions, tools) = if model_info.use_responses_lite {
-            let additional_tools = create_tools_json_for_responses_lite(&prompt.tools)?;
-            let mut prefix = vec![ResponsesApiInputItem::additional_tools(additional_tools)];
+            let mut prefix = vec![ResponsesApiInputItem::additional_tools(tools)];
             if !prompt.base_instructions.text.is_empty() {
                 prefix.push(
                     ResponseItem::Message {
@@ -748,10 +747,7 @@ impl ModelClient {
             input.splice(0..0, prefix);
             (String::new(), None)
         } else {
-            (
-                prompt.base_instructions.text.clone(),
-                Some(create_tools_json_for_responses_api(&prompt.tools)?),
-            )
+            (prompt.base_instructions.text.clone(), Some(tools))
         };
         let reasoning = Self::build_reasoning(model_info, effort, summary);
         let include = if reasoning.is_some() {
