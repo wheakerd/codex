@@ -321,7 +321,6 @@ use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
-use codex_core_plugins::PluginCacheInvalidation;
 use codex_core_plugins::PluginsManager;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
@@ -1551,9 +1550,7 @@ impl Session {
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         self.services.skills_manager.clear_cache();
-        self.services
-            .plugins_manager
-            .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+        self.services.plugins_manager.clear_cache();
         let hooks = build_hooks_for_config(
             config.as_ref(),
             self.services.plugins_manager.as_ref(),

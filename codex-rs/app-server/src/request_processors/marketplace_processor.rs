@@ -62,9 +62,7 @@ impl MarketplaceRequestProcessor {
             MarketplaceRemoveError::InvalidRequest(message) => invalid_request(message),
             MarketplaceRemoveError::Internal(message) => internal_error(message),
         })?;
-        self.thread_manager
-            .plugins_manager()
-            .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+        self.thread_manager.plugins_manager().clear_cache();
         Ok(MarketplaceRemoveResponse {
             marketplace_name: outcome.marketplace_name,
             installed_root: outcome.removed_installed_root,
@@ -121,9 +119,7 @@ impl MarketplaceRequestProcessor {
             MarketplaceAddError::InvalidRequest(message) => invalid_request(message),
             MarketplaceAddError::Internal(message) => internal_error(message),
         })?;
-        self.thread_manager
-            .plugins_manager()
-            .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+        self.thread_manager.plugins_manager().clear_cache();
         Ok(MarketplaceAddResponse {
             marketplace_name: outcome.marketplace_name,
             installed_root: outcome.installed_root,

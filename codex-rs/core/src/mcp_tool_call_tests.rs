@@ -16,7 +16,6 @@ use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AppsConfigToml;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerToolConfig;
-use codex_core_plugins::PluginCacheInvalidation;
 use codex_features::Features;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
@@ -2013,10 +2012,7 @@ approval_mode = "approve"
         .await
         .expect("load config");
     turn_context.config = Arc::new(config);
-    session
-        .services
-        .plugins_manager
-        .clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+    session.services.plugins_manager.clear_runtime_state_cache();
 
     assert_eq!(
         custom_mcp_tool_approval_mode(&session, &turn_context, "sample", "read").await,
@@ -2190,10 +2186,7 @@ enabled = true
         .await
         .expect("load config");
     turn_context.config = Arc::new(config);
-    session
-        .services
-        .plugins_manager
-        .clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+    session.services.plugins_manager.clear_runtime_state_cache();
     let key = McpToolApprovalKey {
         server: "sample".to_string(),
         connector_id: None,

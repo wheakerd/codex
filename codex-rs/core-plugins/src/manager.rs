@@ -353,15 +353,6 @@ struct PluginLoadCacheKey {
     remote_plugin_enabled: bool,
 }
 
-/// Describes which inputs to the plugin caches changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PluginCacheInvalidation {
-    /// Runtime eligibility or configuration changed, while plugin source artifacts stayed stable.
-    RuntimeStateChanged,
-    /// Marketplace membership or plugin source artifacts may have changed.
-    PluginSourcesChanged,
-}
-
 impl PluginsManager {
     pub fn new(codex_home: PathBuf) -> Self {
         Self::new_with_restriction_product(codex_home, Some(Product::Codex))
@@ -487,14 +478,19 @@ impl PluginsManager {
         project_plugin_load_outcome_for_auth(outcome, self.auth_mode())
     }
 
-    pub fn clear_cache(&self, invalidation: PluginCacheInvalidation) {
+    /// Clears all plugin caches, including source-derived tool-suggest metadata.
+    pub fn clear_cache(&self) {
+        self.clear_runtime_state_cache();
+        self.tool_suggest_metadata_catalog.clear();
+    }
+
+    /// Clears runtime projections while retaining source-derived tool-suggest metadata.
+    ///
+    /// Use this only when marketplace membership and plugin artifacts stayed stable. Runtime-only
+    /// changes can arrive after startup prewarm, so retaining the metadata catalog avoids repeating
+    /// the full source scan on the first turn.
+    pub fn clear_runtime_state_cache(&self) {
         self.clear_enabled_outcome_cache();
-        match invalidation {
-            PluginCacheInvalidation::RuntimeStateChanged => {}
-            PluginCacheInvalidation::PluginSourcesChanged => {
-                self.tool_suggest_metadata_catalog.clear();
-            }
-        }
         let mut featured_plugin_ids_cache = match self.featured_plugin_ids_cache.write() {
             Ok(cache) => cache,
             Err(err) => err.into_inner(),
@@ -1490,18 +1486,18 @@ impl PluginsManager {
             marketplace_name,
         );
         if !outcome.upgraded_roots.is_empty() {
-            self.clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+            self.clear_cache();
             match refresh_non_curated_plugin_cache_force_reinstall(
                 self.codex_home.as_path(),
                 &outcome.upgraded_roots,
             ) {
                 Ok(cache_refreshed) => {
                     if cache_refreshed {
-                        self.clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+                        self.clear_runtime_state_cache();
                     }
                 }
                 Err(err) => {
-                    self.clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+                    self.clear_runtime_state_cache();
                     outcome.errors.push(ConfiguredMarketplaceUpgradeError {
                         marketplace_name: marketplace_name
                             .unwrap_or("all configured marketplaces")
@@ -1675,7 +1671,7 @@ impl PluginsManager {
                         let catalog_changed = previous_curated_plugin_version.as_deref()
                             != Some(curated_plugin_version.as_str());
                         if catalog_changed {
-                            manager.clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+                            manager.clear_cache();
                         }
                         let configured_curated_plugin_ids =
                             configured_curated_plugin_ids_from_codex_home(codex_home.as_path());
@@ -1686,12 +1682,11 @@ impl PluginsManager {
                         ) {
                             Ok(cache_refreshed) => {
                                 if cache_refreshed {
-                                    manager
-                                        .clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+                                    manager.clear_runtime_state_cache();
                                 }
                             }
                             Err(err) => {
-                                manager.clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+                                manager.clear_runtime_state_cache();
                                 CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
                                 warn!("failed to refresh curated plugin cache after sync: {err}");
                             }
@@ -1840,12 +1835,12 @@ impl PluginsManager {
             let refreshed = match refresh_result {
                 Ok(cache_refreshed) => {
                     if cache_refreshed {
-                        self.clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+                        self.clear_cache();
                     }
                     true
                 }
                 Err(err) => {
-                    self.clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+                    self.clear_cache();
                     warn!("failed to refresh non-curated plugin cache: {err}");
                     false
                 }

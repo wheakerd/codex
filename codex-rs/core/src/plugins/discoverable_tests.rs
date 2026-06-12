@@ -5,7 +5,6 @@ use crate::plugins::test_support::write_file;
 use crate::plugins::test_support::write_openai_curated_marketplace;
 use crate::plugins::test_support::write_plugins_feature_config;
 use codex_core_plugins::OPENAI_BUNDLED_MARKETPLACE_NAME;
-use codex_core_plugins::PluginCacheInvalidation;
 use codex_core_plugins::PluginInstallRequest;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
@@ -189,7 +188,7 @@ async fn list_tool_suggest_discoverable_plugins_refreshes_metadata_when_sources_
         Vec::<DiscoverablePluginInfo>::new(),
     );
 
-    plugins_manager.clear_cache(PluginCacheInvalidation::RuntimeStateChanged);
+    plugins_manager.clear_runtime_state_cache();
     assert_eq!(
         list_discoverable_plugins_with_manager_and_auth(
             &config,
@@ -202,7 +201,7 @@ async fn list_tool_suggest_discoverable_plugins_refreshes_metadata_when_sources_
         Vec::<DiscoverablePluginInfo>::new(),
     );
 
-    plugins_manager.clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+    plugins_manager.clear_cache();
     assert_eq!(
         list_discoverable_plugins_with_manager_and_auth(
             &config,

@@ -27,7 +27,6 @@ use codex_app_server_protocol::PluginsMigration;
 use codex_app_server_protocol::ServerNotification;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::ThreadManager;
-use codex_core_plugins::PluginCacheInvalidation;
 use codex_external_agent_sessions::ExternalAgentSessionMigration as CoreSessionMigration;
 use codex_thread_store::ThreadStore;
 use std::collections::HashSet;
@@ -226,9 +225,7 @@ impl ExternalAgentConfigRequestProcessor {
             };
             tokio::join!(session_imports, plugin_imports);
             if has_plugin_imports {
-                thread_manager
-                    .plugins_manager()
-                    .clear_cache(PluginCacheInvalidation::PluginSourcesChanged);
+                thread_manager.plugins_manager().clear_cache();
                 thread_manager.skills_manager().clear_cache();
             }
             outgoing
