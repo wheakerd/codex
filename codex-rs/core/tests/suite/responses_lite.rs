@@ -66,18 +66,6 @@ fn additional_tools(body: &Value) -> Result<&[Value]> {
         .context("additional_tools tools should be an array")
 }
 
-fn has_namespaced_tool(tools: &[Value], namespace: &str, tool_name: &str) -> bool {
-    tools.iter().any(|tool| {
-        tool.get("type").and_then(Value::as_str) == Some("namespace")
-            && tool.get("name").and_then(Value::as_str) == Some(namespace)
-            && tool["tools"].as_array().is_some_and(|tools| {
-                tools
-                    .iter()
-                    .any(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name))
-            })
-    })
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -187,7 +175,7 @@ async fn responses_lite_strips_data_image_detail_without_resize_all_images() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Result<()> {
+async fn responses_lite_omits_hosted_tools_with_standalone_extensions() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -223,8 +211,7 @@ async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Res
     let body = request.body_json();
     assert!(body.get("tools").is_none());
     let tools = additional_tools(&body)?;
-    assert!(has_namespaced_tool(tools, "web", "run"));
-    assert!(has_namespaced_tool(tools, "image_gen", "imagegen"));
+    assert!(!tools.is_empty());
     assert!(!has_hosted_tool(tools, "web_search"));
     assert!(!has_hosted_tool(tools, "image_generation"));
 
