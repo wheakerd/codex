@@ -267,10 +267,6 @@ impl App {
                 )?;
             }
             AppEvent::ConsolidateProposedPlan(source) => {
-                if !self.terminal_resize_reflow_enabled() {
-                    self.transcript_reflow.clear();
-                    return Ok(AppRunControl::Continue);
-                }
                 let end = self.transcript_cells.len();
                 let start = trailing_run_start::<history_cell::ProposedPlanStreamCell>(
                     &self.transcript_cells,
