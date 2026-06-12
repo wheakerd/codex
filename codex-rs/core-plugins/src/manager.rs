@@ -47,6 +47,7 @@ use crate::startup_sync::sync_openai_plugins_repo;
 use crate::store::PluginInstallResult as StorePluginInstallResult;
 use crate::store::PluginStore;
 use crate::store::PluginStoreError;
+use crate::tool_suggest_metadata::ToolSuggestMetadataCatalog;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::AuthMode;
 use codex_config::ConfigLayerStack;
@@ -324,6 +325,7 @@ pub struct PluginsManager {
     non_curated_cache_refresh_state: RwLock<NonCuratedCacheRefreshState>,
     enabled_outcome_cache: RwLock<EnabledOutcomeCache>,
     enabled_outcome_load_semaphore: Semaphore,
+    tool_suggest_metadata_catalog: ToolSuggestMetadataCatalog,
     remote_installed_plugins_cache: RwLock<Option<Vec<RemoteInstalledPlugin>>>,
     remote_installed_plugins_cache_refresh_state: RwLock<RemoteInstalledPluginsCacheRefreshState>,
     global_remote_catalog_cache_refresh_state: RwLock<GlobalRemoteCatalogCacheRefreshState>,
@@ -377,6 +379,7 @@ impl PluginsManager {
             non_curated_cache_refresh_state: RwLock::new(NonCuratedCacheRefreshState::default()),
             enabled_outcome_cache: RwLock::new(EnabledOutcomeCache::default()),
             enabled_outcome_load_semaphore: Semaphore::new(/*permits*/ 1),
+            tool_suggest_metadata_catalog: ToolSuggestMetadataCatalog::new(),
             remote_installed_plugins_cache: RwLock::new(None),
             remote_installed_plugins_cache_refresh_state: RwLock::new(
                 RemoteInstalledPluginsCacheRefreshState::default(),
@@ -482,6 +485,14 @@ impl PluginsManager {
             Err(err) => err.into_inner(),
         };
         *featured_plugin_ids_cache = None;
+    }
+
+    /// Clears source-derived metadata used to build plugin tool suggestions.
+    ///
+    /// Eligibility state such as install, disable, policy, and app-overlap filtering is not stored
+    /// in this catalog and does not require invalidation.
+    pub fn clear_tool_suggest_metadata_catalog(&self) {
+        self.tool_suggest_metadata_catalog.clear();
     }
 
     fn clear_enabled_outcome_cache(&self) {
@@ -1326,6 +1337,16 @@ impl PluginsManager {
         })
     }
 
+    pub(crate) async fn tool_suggest_metadata_for_marketplace_plugin(
+        &self,
+        marketplace_name: &str,
+        plugin: &ConfiguredMarketplacePlugin,
+    ) -> Result<PluginCapabilitySummary, MarketplaceError> {
+        self.tool_suggest_metadata_catalog
+            .metadata_for_plugin(marketplace_name, plugin, self.restriction_product)
+            .await
+    }
+
     pub fn maybe_start_plugin_startup_tasks_for_config(
         self: &Arc<Self>,
         config: &PluginsConfigInput,
@@ -1462,6 +1483,7 @@ impl PluginsManager {
             marketplace_name,
         );
         if !outcome.upgraded_roots.is_empty() {
+            self.clear_tool_suggest_metadata_catalog();
             match refresh_non_curated_plugin_cache_force_reinstall(
                 self.codex_home.as_path(),
                 &outcome.upgraded_roots,
@@ -1638,9 +1660,16 @@ impl PluginsManager {
         let codex_home = self.codex_home.clone();
         if let Err(err) = std::thread::Builder::new()
             .name("plugins-curated-repo-sync".to_string())
-            .spawn(
-                move || match sync_openai_plugins_repo(codex_home.as_path()) {
+            .spawn(move || {
+                let previous_curated_plugin_version =
+                    read_curated_plugins_sha(codex_home.as_path());
+                match sync_openai_plugins_repo(codex_home.as_path()) {
                     Ok(curated_plugin_version) => {
+                        let catalog_changed = previous_curated_plugin_version.as_deref()
+                            != Some(curated_plugin_version.as_str());
+                        if catalog_changed {
+                            manager.clear_tool_suggest_metadata_catalog();
+                        }
                         let configured_curated_plugin_ids =
                             configured_curated_plugin_ids_from_codex_home(codex_home.as_path());
                         match refresh_curated_plugin_cache(
@@ -1664,8 +1693,8 @@ impl PluginsManager {
                         CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
                         warn!("failed to sync curated plugins repo: {err}");
                     }
-                },
-            )
+                }
+            })
         {
             CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
             warn!("failed to start curated plugins repo sync task: {err}");
@@ -1803,11 +1832,13 @@ impl PluginsManager {
             let refreshed = match refresh_result {
                 Ok(cache_refreshed) => {
                     if cache_refreshed {
+                        self.clear_tool_suggest_metadata_catalog();
                         self.clear_cache();
                     }
                     true
                 }
                 Err(err) => {
+                    self.clear_tool_suggest_metadata_catalog();
                     self.clear_cache();
                     warn!("failed to refresh non-curated plugin cache: {err}");
                     false
@@ -1874,7 +1905,9 @@ impl PluginsManager {
     }
 }
 
-fn remote_plugin_install_required_description(source: &MarketplacePluginSource) -> String {
+pub(crate) fn remote_plugin_install_required_description(
+    source: &MarketplacePluginSource,
+) -> String {
     let source_description = match source {
         MarketplacePluginSource::Git {
             url,

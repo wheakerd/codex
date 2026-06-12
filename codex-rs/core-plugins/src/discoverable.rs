@@ -2,7 +2,6 @@ use anyhow::Context;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_login::CodexAuth;
-use codex_plugin::PluginCapabilitySummary;
 use std::collections::HashSet;
 use std::path::Component;
 use std::path::Path;
@@ -143,15 +142,10 @@ impl PluginsManager {
                 let plugin_id = plugin.id.clone();
 
                 match self
-                    .read_plugin_detail_for_marketplace_plugin(
-                        &input.plugins,
-                        &marketplace_name,
-                        plugin,
-                    )
+                    .tool_suggest_metadata_for_marketplace_plugin(&marketplace_name, &plugin)
                     .await
                 {
                     Ok(plugin) => {
-                        let plugin: PluginCapabilitySummary = plugin.into();
                         let matches_installed_app =
                             plugin.app_connector_ids.iter().any(|connector_id| {
                                 installed_app_connector_ids.contains(connector_id.0.as_str())

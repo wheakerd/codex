@@ -51,20 +51,24 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceRemoveParams,
     ) -> Result<MarketplaceRemoveResponse, JSONRPCErrorError> {
-        remove_marketplace(
+        let outcome = remove_marketplace(
             self.config.codex_home.to_path_buf(),
             CoreMarketplaceRemoveRequest {
                 marketplace_name: params.marketplace_name,
             },
         )
         .await
-        .map(|outcome| MarketplaceRemoveResponse {
-            marketplace_name: outcome.marketplace_name,
-            installed_root: outcome.removed_installed_root,
-        })
         .map_err(|err| match err {
             MarketplaceRemoveError::InvalidRequest(message) => invalid_request(message),
             MarketplaceRemoveError::Internal(message) => internal_error(message),
+        })?;
+        self.thread_manager
+            .plugins_manager()
+            .clear_tool_suggest_metadata_catalog();
+        self.thread_manager.plugins_manager().clear_cache();
+        Ok(MarketplaceRemoveResponse {
+            marketplace_name: outcome.marketplace_name,
+            installed_root: outcome.removed_installed_root,
         })
     }
 
@@ -105,7 +109,7 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceAddParams,
     ) -> Result<MarketplaceAddResponse, JSONRPCErrorError> {
-        add_marketplace_to_codex_home(
+        let outcome = add_marketplace_to_codex_home(
             self.config.codex_home.to_path_buf(),
             MarketplaceAddRequest {
                 source: params.source,
@@ -114,14 +118,18 @@ impl MarketplaceRequestProcessor {
             },
         )
         .await
-        .map(|outcome| MarketplaceAddResponse {
-            marketplace_name: outcome.marketplace_name,
-            installed_root: outcome.installed_root,
-            already_added: outcome.already_added,
-        })
         .map_err(|err| match err {
             MarketplaceAddError::InvalidRequest(message) => invalid_request(message),
             MarketplaceAddError::Internal(message) => internal_error(message),
+        })?;
+        self.thread_manager
+            .plugins_manager()
+            .clear_tool_suggest_metadata_catalog();
+        self.thread_manager.plugins_manager().clear_cache();
+        Ok(MarketplaceAddResponse {
+            marketplace_name: outcome.marketplace_name,
+            installed_root: outcome.installed_root,
+            already_added: outcome.already_added,
         })
     }
 

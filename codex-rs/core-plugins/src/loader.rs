@@ -30,6 +30,7 @@ use codex_plugin::PluginId;
 use codex_plugin::PluginIdError;
 use codex_plugin::PluginLoadOutcome;
 use codex_plugin::PluginTelemetryMetadata;
+use codex_plugin::prompt_safe_plugin_description;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1072,16 +1073,38 @@ fn plugin_app_metadata_from_file(
         .collect()
 }
 
-pub async fn plugin_telemetry_metadata_from_root(
+pub(crate) enum PluginCapabilitySkillMode {
+    RootPresence,
+    ValidForProduct(Option<Product>),
+}
+
+pub(crate) async fn load_plugin_capability_summary(
     plugin_id: &PluginId,
     plugin_root: &AbsolutePathBuf,
-) -> PluginTelemetryMetadata {
-    let Some(manifest) = load_plugin_manifest(plugin_root.as_path()) else {
-        return PluginTelemetryMetadata::from_plugin_id(plugin_id);
-    };
+    skill_mode: PluginCapabilitySkillMode,
+) -> Option<PluginCapabilitySummary> {
+    let manifest = load_plugin_manifest(plugin_root.as_path())?;
 
     let manifest_paths = &manifest.paths;
-    let has_skills = !plugin_skill_roots(plugin_root, manifest_paths).is_empty();
+    let has_skills = match skill_mode {
+        PluginCapabilitySkillMode::RootPresence => {
+            !plugin_skill_roots(plugin_root, manifest_paths).is_empty()
+        }
+        PluginCapabilitySkillMode::ValidForProduct(restriction_product) => {
+            // Tool-suggest metadata describes the plugin artifact, so user skill-disable rules
+            // are intentionally not applied. Product restrictions are fixed for a manager.
+            !load_plugin_skills(
+                plugin_root,
+                plugin_id,
+                manifest_paths,
+                restriction_product,
+                &SkillConfigRules::default(),
+            )
+            .await
+            .skills
+            .is_empty()
+        }
+    };
     let mut mcp_server_names = Vec::new();
     for path in plugin_mcp_config_paths(plugin_root.as_path(), manifest_paths) {
         mcp_server_names.extend(
@@ -1094,24 +1117,40 @@ pub async fn plugin_telemetry_metadata_from_root(
     mcp_server_names.sort_unstable();
     mcp_server_names.dedup();
 
+    Some(PluginCapabilitySummary {
+        config_name: plugin_id.as_key(),
+        display_name: plugin_id.plugin_name.clone(),
+        description: prompt_safe_plugin_description(manifest.description.as_deref()),
+        has_skills,
+        mcp_server_names,
+        app_connector_ids: load_apps_from_paths(
+            plugin_root.as_path(),
+            plugin_app_config_paths(plugin_root.as_path(), manifest_paths),
+        )
+        .await
+        .into_iter()
+        .map(|app| app.id)
+        .collect(),
+    })
+}
+
+pub async fn plugin_telemetry_metadata_from_root(
+    plugin_id: &PluginId,
+    plugin_root: &AbsolutePathBuf,
+) -> PluginTelemetryMetadata {
+    let mut capability_summary = load_plugin_capability_summary(
+        plugin_id,
+        plugin_root,
+        PluginCapabilitySkillMode::RootPresence,
+    )
+    .await;
+    if let Some(summary) = capability_summary.as_mut() {
+        summary.description = None;
+    }
     PluginTelemetryMetadata {
         plugin_id: plugin_id.clone(),
         remote_plugin_id: None,
-        capability_summary: Some(PluginCapabilitySummary {
-            config_name: plugin_id.as_key(),
-            display_name: plugin_id.plugin_name.clone(),
-            description: None,
-            has_skills,
-            mcp_server_names,
-            app_connector_ids: load_apps_from_paths(
-                plugin_root.as_path(),
-                plugin_app_config_paths(plugin_root.as_path(), manifest_paths),
-            )
-            .await
-            .into_iter()
-            .map(|app| app.id)
-            .collect(),
-        }),
+        capability_summary,
     }
 }
 

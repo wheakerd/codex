@@ -127,6 +127,95 @@ async fn list_tool_suggest_discoverable_plugins_filters_by_loaded_plugin_apps() 
 }
 
 #[tokio::test]
+async fn list_tool_suggest_discoverable_plugins_materializes_metadata_until_catalog_clear() {
+    let first_app_id = "connector_first";
+    let second_app_id = "connector_second";
+    let codex_home = tempdir().expect("tempdir should succeed");
+    let curated_root = curated_plugins_repo_path(codex_home.path());
+    write_openai_curated_marketplace(&curated_root, &["sample"]);
+    write_plugin_app(&curated_root, "sample", "sample", first_app_id);
+    write_plugins_feature_config(codex_home.path());
+
+    let config = load_plugins_config(codex_home.path()).await;
+    let plugins_manager = PluginsManager::new(config.codex_home.to_path_buf());
+    let expected = |app_id: &str| {
+        vec![DiscoverablePluginInfo {
+            id: "sample@openai-curated".to_string(),
+            remote_plugin_id: None,
+            name: "sample".to_string(),
+            description: Some(
+                "Plugin that includes skills, MCP servers, and app connectors".to_string(),
+            ),
+            has_skills: true,
+            mcp_server_names: vec!["sample-docs".to_string()],
+            app_connector_ids: vec![app_id.to_string()],
+        }]
+    };
+
+    assert_eq!(
+        list_discoverable_plugins_with_manager_and_auth(
+            &config,
+            &plugins_manager,
+            /*auth*/ None,
+            &[first_app_id.to_string()],
+        )
+        .await
+        .unwrap(),
+        expected(first_app_id),
+    );
+    assert_eq!(
+        list_discoverable_plugins_with_manager_and_auth(
+            &config,
+            &plugins_manager,
+            /*auth*/ None,
+            &[],
+        )
+        .await
+        .unwrap(),
+        Vec::<DiscoverablePluginInfo>::new(),
+    );
+
+    write_plugin_app(&curated_root, "sample", "sample", second_app_id);
+    assert_eq!(
+        list_discoverable_plugins_with_manager_and_auth(
+            &config,
+            &plugins_manager,
+            /*auth*/ None,
+            &[second_app_id.to_string()],
+        )
+        .await
+        .unwrap(),
+        Vec::<DiscoverablePluginInfo>::new(),
+    );
+
+    plugins_manager.clear_cache();
+    assert_eq!(
+        list_discoverable_plugins_with_manager_and_auth(
+            &config,
+            &plugins_manager,
+            /*auth*/ None,
+            &[second_app_id.to_string()],
+        )
+        .await
+        .unwrap(),
+        Vec::<DiscoverablePluginInfo>::new(),
+    );
+
+    plugins_manager.clear_tool_suggest_metadata_catalog();
+    assert_eq!(
+        list_discoverable_plugins_with_manager_and_auth(
+            &config,
+            &plugins_manager,
+            /*auth*/ None,
+            &[second_app_id.to_string()],
+        )
+        .await
+        .unwrap(),
+        expected(second_app_id),
+    );
+}
+
+#[tokio::test]
 async fn list_tool_suggest_discoverable_plugins_filters_microsoft_by_installed_apps() {
     let codex_home = tempdir().expect("tempdir should succeed");
     let curated_root = curated_plugins_repo_path(codex_home.path());
@@ -879,19 +968,19 @@ async fn list_tool_suggest_discoverable_plugins_does_not_reload_marketplace_per_
     let logs = String::from_utf8(buffer.lock().expect("buffer lock").clone())
         .expect("utf8 logs")
         .replace('\\', "/");
-    assert_eq!(logs.matches("ignoring interface.defaultPrompt").count(), 8);
+    assert_eq!(logs.matches("ignoring interface.defaultPrompt").count(), 4);
     let normalized_logs = logs.replace('\\', "/");
     assert_eq!(
         normalized_logs
             .matches("gmail/.codex-plugin/plugin.json")
             .count(),
-        4
+        2
     );
     assert_eq!(
         normalized_logs
             .matches("openai-developers/.codex-plugin/plugin.json")
             .count(),
-        4
+        2
     );
 }
 
