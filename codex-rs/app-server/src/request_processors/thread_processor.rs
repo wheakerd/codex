@@ -386,6 +386,7 @@ impl ThreadRequestProcessor {
         params: ThreadStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
         request_context: RequestContext,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_start_inner(
@@ -393,6 +394,7 @@ impl ThreadRequestProcessor {
             params,
             app_server_client_name,
             app_server_client_version,
+            open_ai_form_elicitation_capability,
             request_context,
         )
         .await
@@ -415,12 +417,14 @@ impl ThreadRequestProcessor {
         params: ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_resume_inner(
             request_id,
             params,
             app_server_client_name,
             app_server_client_version,
+            open_ai_form_elicitation_capability,
         )
         .await
         .map(|()| None)
@@ -432,12 +436,14 @@ impl ThreadRequestProcessor {
         params: ThreadForkParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_fork_inner(
             request_id,
             params,
             app_server_client_name,
             app_server_client_version,
+            open_ai_form_elicitation_capability,
         )
         .await
         .map(|()| None)
@@ -843,6 +849,7 @@ impl ThreadRequestProcessor {
         params: ThreadStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadStartParams {
@@ -913,6 +920,7 @@ impl ThreadRequestProcessor {
                 request_id,
                 app_server_client_name,
                 app_server_client_version,
+                open_ai_form_elicitation_capability,
                 config,
                 typesafe_overrides,
                 dynamic_tools,
@@ -986,6 +994,7 @@ impl ThreadRequestProcessor {
         request_id: ConnectionRequestId,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
         config_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
@@ -1095,6 +1104,10 @@ impl ThreadRequestProcessor {
         if !selected_capability_roots.is_empty() {
             thread_extension_init.insert(selected_capability_roots);
         }
+        insert_open_ai_form_elicitation_capability(
+            &mut thread_extension_init,
+            open_ai_form_elicitation_capability,
+        );
         let create_thread_started_at = std::time::Instant::now();
         let NewThread {
             thread_id,
@@ -2484,6 +2497,7 @@ impl ThreadRequestProcessor {
         params: ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
     ) -> Result<(), JSONRPCErrorError> {
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
@@ -2623,11 +2637,12 @@ impl ThreadRequestProcessor {
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_extension_data(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(&request_id).await,
+                open_ai_form_elicitation_extension_data(open_ai_form_elicitation_capability),
             )
             .await
         {
@@ -3241,6 +3256,7 @@ impl ThreadRequestProcessor {
         params: ThreadForkParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadForkParams {
             thread_id,
@@ -3340,7 +3356,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history(
+            .fork_thread_from_history_with_extension_data(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -3350,6 +3366,7 @@ impl ThreadRequestProcessor {
                 }),
                 thread_source.map(Into::into),
                 self.request_trace_context(&request_id).await,
+                open_ai_form_elicitation_extension_data(open_ai_form_elicitation_capability),
             )
             .await
             .map_err(|err| match err {
@@ -3644,6 +3661,23 @@ impl ThreadRequestProcessor {
         }
 
         Ok((items, next_cursor))
+    }
+}
+
+fn open_ai_form_elicitation_extension_data(
+    capability: codex_mcp::OpenAiFormElicitationCapability,
+) -> ExtensionDataInit {
+    let mut extension_data = ExtensionDataInit::new();
+    insert_open_ai_form_elicitation_capability(&mut extension_data, capability);
+    extension_data
+}
+
+fn insert_open_ai_form_elicitation_capability(
+    extension_data: &mut ExtensionDataInit,
+    capability: codex_mcp::OpenAiFormElicitationCapability,
+) {
+    if capability == codex_mcp::OpenAiFormElicitationCapability::Supported {
+        extension_data.insert(capability);
     }
 }
 

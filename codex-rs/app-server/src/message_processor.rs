@@ -208,6 +208,7 @@ pub(crate) struct InitializedConnectionSessionState {
     pub(crate) app_server_client_name: String,
     pub(crate) client_version: String,
     pub(crate) request_attestation: bool,
+    pub(crate) open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
 }
 
 impl Default for ConnectionSessionState {
@@ -257,6 +258,15 @@ impl ConnectionSessionState {
         self.initialized
             .get()
             .is_some_and(|session| session.request_attestation)
+    }
+
+    pub(crate) fn open_ai_form_elicitation_capability(
+        &self,
+    ) -> codex_mcp::OpenAiFormElicitationCapability {
+        self.initialized
+            .get()
+            .map(|session| session.open_ai_form_elicitation_capability)
+            .unwrap_or_default()
     }
 
     pub(crate) fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
@@ -865,6 +875,7 @@ impl MessageProcessor {
         let serialization_scope = codex_request.serialization_scope();
         let app_server_client_name = session.app_server_client_name().map(str::to_string);
         let client_version = session.client_version().map(str::to_string);
+        let open_ai_form_elicitation_capability = session.open_ai_form_elicitation_capability();
         let error_request_id = connection_request_id.clone();
         let rpc_gate = Arc::clone(&session.rpc_gate);
         let processor = Arc::clone(self);
@@ -880,6 +891,7 @@ impl MessageProcessor {
                         request_context,
                         app_server_client_name,
                         client_version,
+                        open_ai_form_elicitation_capability,
                     )
                     .await;
                 if let Err(error) = result {
@@ -909,6 +921,7 @@ impl MessageProcessor {
         request_context: RequestContext,
         app_server_client_name: Option<String>,
         client_version: Option<String>,
+        open_ai_form_elicitation_capability: codex_mcp::OpenAiFormElicitationCapability,
     ) -> Result<(), JSONRPCErrorError> {
         let connection_id = connection_request_id.connection_id;
         let request_id = ConnectionRequestId {
@@ -1056,6 +1069,7 @@ impl MessageProcessor {
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
+                        open_ai_form_elicitation_capability,
                         request_context,
                     )
                     .await
@@ -1072,6 +1086,7 @@ impl MessageProcessor {
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
+                        open_ai_form_elicitation_capability,
                     )
                     .await
             }
@@ -1082,6 +1097,7 @@ impl MessageProcessor {
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
+                        open_ai_form_elicitation_capability,
                     )
                     .await
             }
