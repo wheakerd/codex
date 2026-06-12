@@ -1,7 +1,7 @@
 use super::ContextualUserFragment;
 use codex_tools::DiscoverableTool;
 
-const RECOMMENDED_PLUGINS_INTRO: &str = "Here is a list of plugins that are available but not installed. If the user's query would benefit from one of these plugins, use the `request_plugin_install` tool to suggest that they install it. For example, suggest the Google Drive plugin if the query requires access to Google Drive to succeed.";
+const RECOMMENDED_PLUGINS_INTRO: &str = "Here is a list of plugins that are available but not installed. If the user's query would benefit from one of these plugins, use the `request_plugin_install` tool to suggest that they install it. All entries have `tool_type: plugin`; pass `plugin` as `tool_type` and the parenthesized ID as `tool_id`. For example, suggest the Google Drive plugin if the query requires access to Google Drive to succeed.";
 const MAX_RECOMMENDED_PLUGINS: usize = 50;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +41,7 @@ impl ContextualUserFragment for RecommendedPluginsInstructions {
         let plugins = self
             .plugins
             .iter()
-            .map(|plugin| format!("- {} (plugin id: {})", plugin.name(), plugin.id()))
+            .map(|plugin| format!("- {} ({})", plugin.name(), plugin.id()))
             .collect::<Vec<_>>()
             .join("\n");
         format!("\n{RECOMMENDED_PLUGINS_INTRO}\n\n{plugins}\n")

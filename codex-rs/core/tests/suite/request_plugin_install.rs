@@ -306,11 +306,12 @@ async fn endpoint_mode_injects_candidates_hides_list_and_rejects_invented_ids() 
     assert_eq!(requests.len(), 2);
     let developer_message = requests[0].message_input_texts("developer").join("\n");
     assert!(developer_message.contains("<recommended_plugins>"));
-    assert!(developer_message.contains("- GitHub (plugin id: github@openai-curated-remote)"));
+    assert!(developer_message.contains("All entries have `tool_type: plugin`"));
+    assert!(developer_message.contains("- GitHub (github@openai-curated-remote)"));
     assert!(
-        developer_message
-            .contains("- Google Calendar (plugin id: google-calendar@openai-curated-remote)")
+        developer_message.contains("- Google Calendar (google-calendar@openai-curated-remote)")
     );
+    assert!(!developer_message.contains("plugin id:"));
     let body = requests[0].body_json();
     let tools = tool_names(&body);
     assert!(
