@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io;
 use std::num::NonZeroUsize;
@@ -750,6 +751,10 @@ pub enum MessagePhase {
     FinalAnswer,
 }
 
+pub type ResponseItemMetadata = BTreeMap<String, String>;
+
+pub const RESPONSE_ITEM_TURN_ID_METADATA_KEY: &str = "turn_id";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
@@ -765,11 +770,17 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         phase: Option<MessagePhase>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     AgentMessage {
         author: String,
         recipient: String,
         content: Vec<AgentMessageInputContent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     Reasoning {
         #[serde(default, skip_serializing)]
@@ -781,6 +792,9 @@ pub enum ResponseItem {
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
         encrypted_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     LocalShellCall {
         /// Legacy id field retained for compatibility with older payloads.
@@ -791,6 +805,9 @@ pub enum ResponseItem {
         call_id: Option<String>,
         status: LocalShellStatus,
         action: LocalShellAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     FunctionCall {
         #[serde(default, skip_serializing)]
@@ -805,6 +822,9 @@ pub enum ResponseItem {
         // Session::handle_function_call parse it into a Value.
         arguments: String,
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     ToolSearchCall {
         #[serde(default, skip_serializing)]
@@ -817,6 +837,9 @@ pub enum ResponseItem {
         execution: String,
         #[ts(type = "unknown")]
         arguments: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     // NOTE: The `output` field for `function_call_output` uses a dedicated payload type with
     // custom serialization. On the wire it is either:
@@ -828,6 +851,9 @@ pub enum ResponseItem {
         #[ts(as = "FunctionCallOutputBody")]
         #[schemars(with = "FunctionCallOutputBody")]
         output: FunctionCallOutputPayload,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     CustomToolCall {
         #[serde(default, skip_serializing)]
@@ -840,6 +866,9 @@ pub enum ResponseItem {
         call_id: String,
         name: String,
         input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     // `custom_tool_call_output.output` uses the same wire encoding as
     // `function_call_output.output` so freeform tools can return either plain
@@ -852,6 +881,9 @@ pub enum ResponseItem {
         #[ts(as = "FunctionCallOutputBody")]
         #[schemars(with = "FunctionCallOutputBody")]
         output: FunctionCallOutputPayload,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     ToolSearchOutput {
         call_id: Option<String>,
@@ -859,6 +891,9 @@ pub enum ResponseItem {
         execution: String,
         #[ts(type = "unknown[]")]
         tools: Vec<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     // Emitted by the Responses API when the agent triggers a web search.
     // Example payload (from SSE `response.output_item.done`):
@@ -878,6 +913,9 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         action: Option<WebSearchAction>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     // Emitted by the Responses API when the agent triggers image generation.
     // Example payload:
@@ -895,16 +933,29 @@ pub enum ResponseItem {
         #[ts(optional)]
         revised_prompt: Option<String>,
         result: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     #[serde(alias = "compaction_summary")]
     Compaction {
         encrypted_content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
-    CompactionTrigger,
+    CompactionTrigger {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
+    },
     ContextCompaction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         encrypted_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        metadata: Option<ResponseItemMetadata>,
     },
     #[serde(other)]
     Other,
@@ -914,6 +965,84 @@ impl ResponseItem {
     /// Returns whether this item is an ordinary user-role message.
     pub fn is_user_message(&self) -> bool {
         matches!(self, Self::Message { role, .. } if role == "user")
+    }
+
+    /// Returns the non-empty turn ID stamped onto this item, if present.
+    pub fn turn_id(&self) -> Option<&str> {
+        self.metadata()
+            .and_then(|metadata| metadata.get(RESPONSE_ITEM_TURN_ID_METADATA_KEY))
+            .map(String::as_str)
+            .filter(|turn_id| !turn_id.is_empty())
+    }
+
+    /// Stamps the item with `turn_id` unless it already has a non-empty turn ID.
+    pub fn stamp_turn_id_if_missing(&mut self, turn_id: &str) {
+        if turn_id.is_empty() {
+            return;
+        }
+        let Some(metadata) = self.metadata_mut() else {
+            return;
+        };
+        if metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(RESPONSE_ITEM_TURN_ID_METADATA_KEY))
+            .is_some_and(|turn_id| !turn_id.is_empty())
+        {
+            return;
+        }
+        metadata.get_or_insert_with(BTreeMap::new).insert(
+            RESPONSE_ITEM_TURN_ID_METADATA_KEY.to_string(),
+            turn_id.to_string(),
+        );
+    }
+
+    /// Removes Responses API item metadata before sending to a provider that does not accept it.
+    pub fn clear_metadata(&mut self) {
+        if let Some(metadata) = self.metadata_mut() {
+            *metadata = None;
+        }
+    }
+
+    fn metadata(&self) -> Option<&ResponseItemMetadata> {
+        match self {
+            Self::Message { metadata, .. }
+            | Self::AgentMessage { metadata, .. }
+            | Self::Reasoning { metadata, .. }
+            | Self::LocalShellCall { metadata, .. }
+            | Self::FunctionCall { metadata, .. }
+            | Self::ToolSearchCall { metadata, .. }
+            | Self::FunctionCallOutput { metadata, .. }
+            | Self::CustomToolCall { metadata, .. }
+            | Self::CustomToolCallOutput { metadata, .. }
+            | Self::ToolSearchOutput { metadata, .. }
+            | Self::WebSearchCall { metadata, .. }
+            | Self::ImageGenerationCall { metadata, .. }
+            | Self::Compaction { metadata, .. }
+            | Self::CompactionTrigger { metadata }
+            | Self::ContextCompaction { metadata, .. } => metadata.as_ref(),
+            Self::Other => None,
+        }
+    }
+
+    fn metadata_mut(&mut self) -> Option<&mut Option<ResponseItemMetadata>> {
+        match self {
+            Self::Message { metadata, .. }
+            | Self::AgentMessage { metadata, .. }
+            | Self::Reasoning { metadata, .. }
+            | Self::LocalShellCall { metadata, .. }
+            | Self::FunctionCall { metadata, .. }
+            | Self::ToolSearchCall { metadata, .. }
+            | Self::FunctionCallOutput { metadata, .. }
+            | Self::CustomToolCall { metadata, .. }
+            | Self::CustomToolCallOutput { metadata, .. }
+            | Self::ToolSearchOutput { metadata, .. }
+            | Self::WebSearchCall { metadata, .. }
+            | Self::ImageGenerationCall { metadata, .. }
+            | Self::Compaction { metadata, .. }
+            | Self::CompactionTrigger { metadata }
+            | Self::ContextCompaction { metadata, .. } => Some(metadata),
+            Self::Other => None,
+        }
     }
 }
 
@@ -1153,13 +1282,20 @@ impl From<ResponseInputItem> for ResponseItem {
                 content,
                 id: None,
                 phase,
+                metadata: None,
             },
-            ResponseInputItem::FunctionCallOutput { call_id, output } => {
-                Self::FunctionCallOutput { call_id, output }
-            }
+            ResponseInputItem::FunctionCallOutput { call_id, output } => Self::FunctionCallOutput {
+                call_id,
+                output,
+                metadata: None,
+            },
             ResponseInputItem::McpToolCallOutput { call_id, output } => {
                 let output = output.into_function_call_output_payload();
-                Self::FunctionCallOutput { call_id, output }
+                Self::FunctionCallOutput {
+                    call_id,
+                    output,
+                    metadata: None,
+                }
             }
             ResponseInputItem::CustomToolCallOutput {
                 call_id,
@@ -1169,6 +1305,7 @@ impl From<ResponseInputItem> for ResponseItem {
                 call_id,
                 name,
                 output,
+                metadata: None,
             },
             ResponseInputItem::ToolSearchOutput {
                 call_id,
@@ -1180,6 +1317,7 @@ impl From<ResponseInputItem> for ResponseItem {
                 status,
                 execution,
                 tools,
+                metadata: None,
             },
         }
     }
@@ -1718,8 +1856,64 @@ mod tests {
                     text: "still working".to_string(),
                 }],
                 phase: Some(MessagePhase::Commentary),
+                metadata: None,
             }
         );
+    }
+
+    #[test]
+    fn response_item_metadata_round_trips_and_stamps_turn_ids() -> Result<()> {
+        let mut item = response_item_with_metadata(Some(response_item_metadata(&[
+            (RESPONSE_ITEM_TURN_ID_METADATA_KEY, "turn-1"),
+            ("other", "value"),
+        ])));
+        let round_trip: ResponseItem = serde_json::from_value(serde_json::to_value(&item)?)?;
+        assert_eq!(round_trip, item);
+
+        item.stamp_turn_id_if_missing("turn-2");
+        assert_eq!(item.turn_id(), Some("turn-1"));
+        assert_eq!(
+            item.metadata()
+                .and_then(|metadata| metadata.get("other"))
+                .map(String::as_str),
+            Some("value")
+        );
+
+        let mut empty_turn_id = response_item_with_metadata(Some(response_item_metadata(&[
+            (RESPONSE_ITEM_TURN_ID_METADATA_KEY, ""),
+            ("other", "value"),
+        ])));
+        empty_turn_id.stamp_turn_id_if_missing("turn-1");
+        assert_eq!(empty_turn_id.turn_id(), Some("turn-1"));
+
+        let mut missing_turn_id = response_item_with_metadata(None);
+        missing_turn_id.stamp_turn_id_if_missing("");
+        missing_turn_id.stamp_turn_id_if_missing("turn-1");
+        assert_eq!(missing_turn_id.turn_id(), Some("turn-1"));
+
+        let mut other = ResponseItem::Other;
+        other.stamp_turn_id_if_missing("turn-1");
+        assert_eq!(other.turn_id(), None);
+        Ok(())
+    }
+
+    fn response_item_with_metadata(metadata: Option<ResponseItemMetadata>) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+            phase: None,
+            metadata,
+        }
+    }
+
+    fn response_item_metadata(entries: &[(&str, &str)]) -> ResponseItemMetadata {
+        entries
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
     }
 
     #[test]
@@ -1823,6 +2017,7 @@ mod tests {
                 status: "completed".to_string(),
                 revised_prompt: Some("A small blue square".to_string()),
                 result: "Zm9v".to_string(),
+                metadata: None,
             }
         );
     }
@@ -1844,6 +2039,7 @@ mod tests {
                 status: "completed".to_string(),
                 revised_prompt: None,
                 result: "Zm9v".to_string(),
+                metadata: None,
             }
         );
     }
@@ -2195,6 +2391,7 @@ mod tests {
                 namespace: Some("mcp__codex_apps__gmail".to_string()),
                 arguments: "{\"top_k\":5}".to_string(),
                 call_id: "call-1".to_string(),
+                metadata: None,
             }
         );
     }
@@ -2541,6 +2738,7 @@ mod tests {
             item,
             ResponseItem::Compaction {
                 encrypted_content: "abc".into(),
+                metadata: None,
             }
         );
         Ok(())
@@ -2556,6 +2754,7 @@ mod tests {
             item,
             ResponseItem::ContextCompaction {
                 encrypted_content: Some("abc".into()),
+                metadata: None,
             }
         );
         Ok(())
@@ -2563,7 +2762,7 @@ mod tests {
 
     #[test]
     fn serializes_compaction_trigger_without_payload() -> Result<()> {
-        let item = ResponseItem::CompactionTrigger;
+        let item = ResponseItem::CompactionTrigger { metadata: None };
 
         assert_eq!(
             serde_json::to_value(item)?,
@@ -2575,12 +2774,29 @@ mod tests {
     }
 
     #[test]
+    fn serializes_stamped_compaction_trigger_metadata() -> Result<()> {
+        let mut item = ResponseItem::CompactionTrigger { metadata: None };
+        item.stamp_turn_id_if_missing("turn-1");
+
+        assert_eq!(
+            serde_json::to_value(item)?,
+            serde_json::json!({
+                "type": "compaction_trigger",
+                "metadata": {
+                    "turn_id": "turn-1",
+                },
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
     fn deserializes_compaction_trigger_without_payload() -> Result<()> {
         let json = r#"{"type":"compaction_trigger"}"#;
 
         let item: ResponseItem = serde_json::from_str(json)?;
 
-        assert_eq!(item, ResponseItem::CompactionTrigger);
+        assert_eq!(item, ResponseItem::CompactionTrigger { metadata: None });
         Ok(())
     }
 
@@ -2677,6 +2893,7 @@ mod tests {
                 id: expected_id.clone(),
                 status: expected_status.clone(),
                 action: expected_action.clone(),
+                metadata: None,
             };
             assert_eq!(parsed, expected);
 
@@ -2764,6 +2981,7 @@ mod tests {
                     "query": "calendar create",
                     "limit": 1,
                 }),
+                metadata: None,
             }
         );
 
@@ -2824,6 +3042,7 @@ mod tests {
                         "additionalProperties": false,
                     }
                 })],
+                metadata: None,
             }
         );
 
@@ -2877,6 +3096,7 @@ mod tests {
                 arguments: serde_json::json!({
                     "paths": ["crm"],
                 }),
+                metadata: None,
             }
         );
 
@@ -2896,6 +3116,7 @@ mod tests {
                 status: "completed".to_string(),
                 execution: "server".to_string(),
                 tools: vec![],
+                metadata: None,
             }
         );
 

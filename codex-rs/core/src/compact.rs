@@ -32,6 +32,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ResponseItemMetadata;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -204,12 +205,11 @@ async fn run_compact_task_inner_impl(
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+    let mut initial_input_for_turn: ResponseItem = initial_input_for_turn.into();
+    initial_input_for_turn.stamp_turn_id_if_missing(&turn_context.sub_id);
 
     let mut history = sess.clone_history().await;
-    history.record_items(
-        &[initial_input_for_turn.into()],
-        turn_context.truncation_policy,
-    );
+    history.record_items(&[initial_input_for_turn], turn_context.truncation_policy);
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
@@ -294,9 +294,13 @@ async fn run_compact_task_inner_impl(
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let user_messages = collect_user_messages(history_items);
+    let user_messages = collect_user_message_items(history_items);
 
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    let mut new_history =
+        build_compacted_history_from_items(Vec::new(), &user_messages, &summary_text);
+    if let Some(summary_item) = new_history.last_mut() {
+        summary_item.stamp_turn_id_if_missing(&turn_context.sub_id);
+    }
     let window_id = sess.advance_auto_compact_window_id().await;
 
     if matches!(
@@ -443,7 +447,13 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     }
 }
 
-pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CompactedUserMessage {
+    message: String,
+    metadata: Option<ResponseItemMetadata>,
+}
+
+pub(crate) fn collect_user_message_items(items: &[ResponseItem]) -> Vec<CompactedUserMessage> {
     items
         .iter()
         .filter_map(|item| match crate::event_mapping::parse_turn_item(item) {
@@ -451,11 +461,25 @@ pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
                 if is_summary_message(&user.message()) {
                     None
                 } else {
-                    Some(user.message())
+                    Some(CompactedUserMessage {
+                        message: user.message(),
+                        metadata: match item {
+                            ResponseItem::Message { metadata, .. } => metadata.clone(),
+                            _ => None,
+                        },
+                    })
                 }
             }
             _ => None,
         })
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
+    collect_user_message_items(items)
+        .into_iter()
+        .map(|message| message.message)
         .collect()
 }
 
@@ -520,6 +544,7 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     compacted_history
 }
 
+#[cfg(test)]
 pub(crate) fn build_compacted_history(
     initial_context: Vec<ResponseItem>,
     user_messages: &[String],
@@ -533,26 +558,60 @@ pub(crate) fn build_compacted_history(
     )
 }
 
+pub(crate) fn build_compacted_history_from_items(
+    initial_context: Vec<ResponseItem>,
+    user_messages: &[CompactedUserMessage],
+    summary_text: &str,
+) -> Vec<ResponseItem> {
+    build_compacted_history_from_items_with_limit(
+        initial_context,
+        user_messages,
+        summary_text,
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    )
+}
+
+#[cfg(test)]
 fn build_compacted_history_with_limit(
-    mut history: Vec<ResponseItem>,
+    history: Vec<ResponseItem>,
     user_messages: &[String],
     summary_text: &str,
     max_tokens: usize,
 ) -> Vec<ResponseItem> {
-    let mut selected_messages: Vec<String> = Vec::new();
+    let user_messages = user_messages
+        .iter()
+        .map(|message| CompactedUserMessage {
+            message: message.clone(),
+            metadata: None,
+        })
+        .collect::<Vec<_>>();
+    build_compacted_history_from_items_with_limit(history, &user_messages, summary_text, max_tokens)
+}
+
+fn build_compacted_history_from_items_with_limit(
+    mut history: Vec<ResponseItem>,
+    user_messages: &[CompactedUserMessage],
+    summary_text: &str,
+    max_tokens: usize,
+) -> Vec<ResponseItem> {
+    let mut selected_messages: Vec<CompactedUserMessage> = Vec::new();
     if max_tokens > 0 {
         let mut remaining = max_tokens;
         for message in user_messages.iter().rev() {
             if remaining == 0 {
                 break;
             }
-            let tokens = approx_token_count(message);
+            let tokens = approx_token_count(&message.message);
             if tokens <= remaining {
                 selected_messages.push(message.clone());
                 remaining = remaining.saturating_sub(tokens);
             } else {
-                let truncated = truncate_text(message, TruncationPolicy::Tokens(remaining));
-                selected_messages.push(truncated);
+                let truncated =
+                    truncate_text(&message.message, TruncationPolicy::Tokens(remaining));
+                selected_messages.push(CompactedUserMessage {
+                    message: truncated,
+                    metadata: message.metadata.clone(),
+                });
                 break;
             }
         }
@@ -564,9 +623,10 @@ fn build_compacted_history_with_limit(
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
-                text: message.clone(),
+                text: message.message.clone(),
             }],
             phase: None,
+            metadata: message.metadata.clone(),
         });
     }
 
@@ -581,6 +641,7 @@ fn build_compacted_history_with_limit(
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text: summary_text }],
         phase: None,
+        metadata: None,
     });
 
     history

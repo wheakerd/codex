@@ -41,6 +41,7 @@ fn user_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
+        metadata: None,
     }
 }
 fn assistant_msg(text: &str) -> ResponseItem {
@@ -51,6 +52,7 @@ fn assistant_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
+        metadata: None,
     }
 }
 
@@ -79,6 +81,7 @@ fn truncates_before_requested_user_message() {
             }],
             content: None,
             encrypted_content: None,
+            metadata: None,
         },
         ResponseItem::FunctionCall {
             id: None,
@@ -86,6 +89,7 @@ fn truncates_before_requested_user_message() {
             name: "tool".to_string(),
             namespace: None,
             arguments: "{}".to_string(),
+            metadata: None,
         },
         assistant_msg("a4"),
     ];

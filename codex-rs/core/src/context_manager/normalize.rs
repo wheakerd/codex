@@ -19,7 +19,9 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
 
     for (idx, item) in items.iter().enumerate() {
         match item {
-            ResponseItem::FunctionCall { call_id, .. } => {
+            ResponseItem::FunctionCall {
+                call_id, metadata, ..
+            } => {
                 let has_output = items.iter().any(|i| match i {
                     ResponseItem::FunctionCallOutput {
                         call_id: existing, ..
@@ -34,12 +36,14 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                         ResponseItem::FunctionCallOutput {
                             call_id: call_id.clone(),
                             output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+                            metadata: metadata.clone(),
                         },
                     ));
                 }
             }
             ResponseItem::ToolSearchCall {
                 call_id: Some(call_id),
+                metadata,
                 ..
             } => {
                 let has_output = items.iter().any(|i| match i {
@@ -59,11 +63,14 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                             status: "completed".to_string(),
                             execution: "client".to_string(),
                             tools: Vec::new(),
+                            metadata: metadata.clone(),
                         },
                     ));
                 }
             }
-            ResponseItem::CustomToolCall { call_id, .. } => {
+            ResponseItem::CustomToolCall {
+                call_id, metadata, ..
+            } => {
                 let has_output = items.iter().any(|i| match i {
                     ResponseItem::CustomToolCallOutput {
                         call_id: existing, ..
@@ -81,12 +88,15 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                             call_id: call_id.clone(),
                             name: None,
                             output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+                            metadata: metadata.clone(),
                         },
                     ));
                 }
             }
             // LocalShellCall is represented in upstream streams by a FunctionCallOutput
-            ResponseItem::LocalShellCall { call_id, .. } => {
+            ResponseItem::LocalShellCall {
+                call_id, metadata, ..
+            } => {
                 if let Some(call_id) = call_id.as_ref() {
                     let has_output = items.iter().any(|i| match i {
                         ResponseItem::FunctionCallOutput {
@@ -104,6 +114,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                             ResponseItem::FunctionCallOutput {
                                 call_id: call_id.clone(),
                                 output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+                                metadata: metadata.clone(),
                             },
                         ));
                     }

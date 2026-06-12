@@ -14349,6 +14349,15 @@
                 ],
                 "writeOnly": true
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "phase": {
                 "anyOf": [
                   {
@@ -14389,6 +14398,15 @@
                 },
                 "type": "array"
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "recipient": {
                 "type": "string"
               },
@@ -14424,6 +14442,15 @@
               "encrypted_content": {
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
                   "null"
                 ]
               },
@@ -14468,6 +14495,15 @@
                 ],
                 "writeOnly": true
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "status": {
                 "$ref": "#/definitions/v2/LocalShellStatus"
               },
@@ -14501,6 +14537,15 @@
                   "null"
                 ],
                 "writeOnly": true
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "name": {
                 "type": "string"
@@ -14547,6 +14592,15 @@
                 ],
                 "writeOnly": true
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "status": {
                 "type": [
                   "string",
@@ -14573,6 +14627,15 @@
             "properties": {
               "call_id": {
                 "type": "string"
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "output": {
                 "$ref": "#/definitions/v2/FunctionCallOutputBody"
@@ -14608,6 +14671,15 @@
               "input": {
                 "type": "string"
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -14638,6 +14710,15 @@
             "properties": {
               "call_id": {
                 "type": "string"
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "name": {
                 "type": [
@@ -14674,6 +14755,15 @@
               },
               "execution": {
                 "type": "string"
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "status": {
                 "type": "string"
@@ -14718,6 +14808,15 @@
                 ],
                 "writeOnly": true
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "status": {
                 "type": [
                   "string",
@@ -14742,6 +14841,15 @@
             "properties": {
               "id": {
                 "type": "string"
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "result": {
                 "type": "string"
@@ -14777,6 +14885,15 @@
               "encrypted_content": {
                 "type": "string"
               },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "type": {
                 "enum": [
                   "compaction"
@@ -14794,6 +14911,15 @@
           },
           {
             "properties": {
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "type": {
                 "enum": [
                   "compaction_trigger"
@@ -14813,6 +14939,15 @@
               "encrypted_content": {
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": [
+                  "object",
                   "null"
                 ]
               },

@@ -251,6 +251,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                             .to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -258,12 +259,14 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                     namespace: None,
                     arguments: "{\"repo\":\"openai/codex\"}".to_string(),
                     call_id: "call-1".to_string(),
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call-1".to_string(),
                     output: codex_protocol::models::FunctionCallOutputPayload::from_text(
                         "repo visibility: public".to_string(),
                     ),
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -273,6 +276,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                             .to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
             ],
         )
@@ -479,6 +483,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
                         text: "Please also push the second docs fix.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -487,6 +492,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
                         text: "I need approval for the second push.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
             ],
         )
@@ -609,6 +615,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "Compacted retained user request.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -617,6 +624,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "Compacted summary of earlier guardian context.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
             ],
             /*reference_context_item*/ None,
@@ -633,6 +641,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "Please push after the compaction.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -641,6 +650,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "I need approval for the post-compaction push.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
             ],
         )
@@ -688,6 +698,7 @@ fn collect_guardian_transcript_entries_skips_contextual_user_messages() {
                 text: "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>".to_string(),
             }],
             phase: None,
+            metadata: None,
         },
         ResponseItem::Message {
             id: None,
@@ -696,6 +707,7 @@ fn collect_guardian_transcript_entries_skips_contextual_user_messages() {
                 text: "hello".to_string(),
             }],
             phase: None,
+            metadata: None,
         },
     ];
 
@@ -723,6 +735,7 @@ fn collect_guardian_transcript_entries_keeps_manual_approval_developer_message()
                 text: "ordinary developer context".to_string(),
             }],
             phase: None,
+            metadata: None,
         },
         ResponseItem::Message {
             id: None,
@@ -731,6 +744,7 @@ fn collect_guardian_transcript_entries_keeps_manual_approval_developer_message()
                 text: approval_text.clone(),
             }],
             phase: None,
+            metadata: None,
         },
     ];
 
@@ -755,6 +769,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
                 text: "check the repo".to_string(),
             }],
             phase: None,
+            metadata: None,
         },
         ResponseItem::FunctionCall {
             id: None,
@@ -762,12 +777,14 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
             namespace: None,
             arguments: "{\"path\":\"README.md\"}".to_string(),
             call_id: "call-1".to_string(),
+            metadata: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: codex_protocol::models::FunctionCallOutputPayload::from_text(
                 "repo is public".to_string(),
             ),
+            metadata: None,
         },
         ResponseItem::Message {
             id: None,
@@ -776,6 +793,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
                 text: "I need to push a fix".to_string(),
             }],
             phase: None,
+            metadata: None,
         },
     ];
 
@@ -1692,6 +1710,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "Please push the second docs fix too.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -1700,6 +1719,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "I need approval for the second docs fix.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
             ],
         )
@@ -1737,6 +1757,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "Please push the third docs fix too.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -1745,6 +1766,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "I need approval for the third docs fix.".to_string(),
                     }],
                     phase: None,
+                    metadata: None,
                 },
             ],
         )
@@ -2484,7 +2506,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "Please inspect pending changes before pushing.".to_string(),
                         }],
                         phase: None,
-                    },
+                        metadata: None,},
                     ResponseItem::Message {
                         id: None,
                         role: "assistant".to_string(),
@@ -2492,7 +2514,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "I need approval to run git diff.".to_string(),
                         }],
                         phase: None,
-                    },
+                        metadata: None,},
                 ],
             )
             .await;
@@ -2551,7 +2573,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "Now inspect whether pushing is safe.".to_string(),
                         }],
                         phase: None,
-                    },
+                        metadata: None,},
                     ResponseItem::Message {
                         id: None,
                         role: "assistant".to_string(),
@@ -2559,7 +2581,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "I need approval to push after the diff check.".to_string(),
                         }],
                         phase: None,
-                    },
+                        metadata: None,},
                 ],
             )
             .await;

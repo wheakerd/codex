@@ -58,6 +58,7 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
             role,
             content,
             phase,
+            metadata,
         } if role == USER_ROLE
             && matches!(parse_turn_item(item), Some(TurnItem::UserMessage(_))) =>
         {
@@ -72,6 +73,7 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
                     role: role.clone(),
                     content,
                     phase: phase.clone(),
+                    metadata: metadata.clone(),
                 });
             }
         }
@@ -104,6 +106,7 @@ mod tests {
                 }
             }],
             phase: None,
+            metadata: None,
         }
     }
 
@@ -120,6 +123,7 @@ mod tests {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-1".to_string(),
+                metadata: None,
             },
             message(ASSISTANT_ROLE, "previous assistant"),
             message("developer", "developer"),
@@ -152,6 +156,7 @@ mod tests {
                 },
             ],
             phase: None,
+            metadata: None,
         };
         let items = vec![
             previous_user,
