@@ -175,7 +175,7 @@ async fn responses_lite_strips_data_image_detail_without_resize_all_images() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_lite_omits_hosted_tools_with_standalone_extensions() -> Result<()> {
+async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
