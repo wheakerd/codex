@@ -1202,8 +1202,13 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message() -> Result<()>
         .await?
         .pop()
         .expect("agent message request");
+    let agent_messages = request.inputs_of_type("agent_message");
+    let turn_id = agent_messages[0]["metadata"]["turn_id"]
+        .as_str()
+        .expect("agent message turn id");
+    assert!(!turn_id.is_empty());
     assert_eq!(
-        request.inputs_of_type("agent_message"),
+        agent_messages,
         vec![json!({
             "type": "agent_message",
             "author": "/root/worker",
@@ -1212,6 +1217,9 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message() -> Result<()>
                 "type": "input_text",
                 "text": notification,
             }],
+            "metadata": {
+                "turn_id": turn_id,
+            },
         })]
     );
 

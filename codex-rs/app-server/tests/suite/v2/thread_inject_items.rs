@@ -82,12 +82,21 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history() -> Resu
     let InitialHistory::Resumed(resumed_history) = history else {
         panic!("expected resumed rollout history");
     };
+    let stored_injected_item = resumed_history
+        .history
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::ResponseItem(response_item) => {
+                let mut unstamped_item = response_item.clone();
+                unstamped_item.clear_metadata();
+                (unstamped_item == injected_item).then_some(response_item)
+            }
+            _ => None,
+        })
+        .context("injected item should be persisted in rollout history")?;
     assert!(
-        resumed_history
-            .history
-            .iter()
-            .any(|item| matches!(item, RolloutItem::ResponseItem(response_item) if response_item == &injected_item)),
-        "injected item should be persisted in rollout history"
+        stored_injected_item.turn_id().is_some(),
+        "injected item should be stamped in rollout history"
     );
 
     let turn_req = mcp

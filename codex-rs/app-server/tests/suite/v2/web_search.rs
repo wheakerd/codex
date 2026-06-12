@@ -152,16 +152,25 @@ async fn standalone_web_search_round_trips_output() -> Result<()> {
         search_body["settings"]["allowed_callers"],
         json!(["direct"])
     );
+    let search_input = search_body["input"]
+        .as_array()
+        .context("search input should be an array")?;
+    let last_search_input = search_input
+        .last()
+        .context("search input should not be empty")?;
+    let turn_id = last_search_input["metadata"]["turn_id"]
+        .as_str()
+        .context("search input should include turn id")?;
     assert_eq!(
-        search_body["input"]
-            .as_array()
-            .context("search input should be an array")?
-            .last(),
-        Some(&json!({
+        last_search_input,
+        &json!({
             "type": "message",
             "role": "user",
             "content": [{"type": "input_text", "text": "Search the web"}],
-        }))
+            "metadata": {
+                "turn_id": turn_id,
+            },
+        })
     );
 
     assert_eq!(
