@@ -77,6 +77,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::Semaphore;
+use tracing::instrument;
 use tracing::warn;
 
 static CURATED_REPO_SYNC_STARTED: AtomicBool = AtomicBool::new(false);
@@ -353,12 +354,13 @@ struct PluginLoadCacheKey {
 
 impl PluginsManager {
     pub fn new(codex_home: PathBuf) -> Self {
-        Self::new_with_restriction_product(codex_home, Some(Product::Codex))
+        Self::new_with_options(codex_home, Some(Product::Codex), /*auth_mode*/ None)
     }
 
-    pub fn new_with_restriction_product(
+    pub fn new_with_options(
         codex_home: PathBuf,
         restriction_product: Option<Product>,
+        auth_mode: Option<AuthMode>,
     ) -> Self {
         // Product restrictions are enforced at marketplace admission time for a given CODEX_HOME:
         // listing, install, and curated refresh all consult this restriction context before new
@@ -385,7 +387,7 @@ impl PluginsManager {
                 GlobalRemoteCatalogCacheRefreshState::default(),
             ),
             restriction_product,
-            auth_mode: RwLock::new(None),
+            auth_mode: RwLock::new(auth_mode),
             analytics_events_client: RwLock::new(None),
         }
     }
@@ -432,6 +434,11 @@ impl PluginsManager {
             .await
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(force_reload, plugins_enabled = config.plugins_enabled)
+    )]
     pub(crate) async fn plugins_for_config_with_force_reload(
         &self,
         config: &PluginsConfigInput,
@@ -1188,6 +1195,7 @@ impl PluginsManager {
         })
     }
 
+    #[instrument(level = "trace", skip_all)]
     pub async fn read_plugin_detail_for_marketplace_plugin(
         &self,
         config: &PluginsConfigInput,

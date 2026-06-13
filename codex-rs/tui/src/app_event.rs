@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
+use codex_app_server_protocol::GetAccountTokenUsageResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
@@ -38,6 +39,7 @@ use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
+use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
@@ -268,10 +270,10 @@ pub(crate) enum AppEvent {
         thread_id: Option<ThreadId>,
     },
 
-    /// Set or replace the current thread goal objective.
-    SetThreadGoalObjective {
+    /// Materialize and set or replace the current thread goal objective.
+    SetThreadGoalDraft {
         thread_id: ThreadId,
-        objective: String,
+        draft: GoalDraft,
         mode: ThreadGoalSetMode,
     },
 
@@ -291,6 +293,20 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         result: Result<Vec<RateLimitSnapshot>, String>,
     },
+
+    /// Fetch account-wide token activity for a `/usage` history card.
+    RefreshTokenActivity {
+        request_id: u64,
+    },
+
+    /// Result of fetching account-wide token activity.
+    TokenActivityLoaded {
+        request_id: u64,
+        result: Result<GetAccountTokenUsageResponse, String>,
+    },
+
+    /// Commit a settled token activity card after a stream shutdown barrier.
+    CommitCompletedTokenActivityOutput,
 
     /// Send a user-confirmed request to notify the workspace owner.
     SendAddCreditsNudgeEmail {

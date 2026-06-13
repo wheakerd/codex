@@ -98,12 +98,12 @@ impl TurnEnvironments {
                 None
             }
         };
-        TurnEnvironment::new(
+        Ok(TurnEnvironment::new(
             environment_id,
             environment,
             selected_environment.cwd.clone(),
             shell,
-        )
+        ))
     }
 
     pub(crate) fn to_selections(&self) -> Vec<TurnEnvironmentSelection> {
@@ -368,15 +368,12 @@ url = "ws://127.0.0.1:8765"
         );
         let remote = TurnEnvironments {
             environment_manager: Arc::clone(&local_manager),
-            turn_environments: vec![
-                TurnEnvironment::new(
-                    REMOTE_ENVIRONMENT_ID.to_string(),
-                    remote_environment.clone(),
-                    cwd.clone(),
-                    /*shell*/ None,
-                )
-                .expect("remote cwd URI"),
-            ],
+            turn_environments: vec![TurnEnvironment::new(
+                REMOTE_ENVIRONMENT_ID.to_string(),
+                remote_environment.clone(),
+                cwd.clone(),
+                /*shell*/ None,
+            )],
         };
         let multiple = TurnEnvironments {
             environment_manager: local_manager,
@@ -387,8 +384,7 @@ url = "ws://127.0.0.1:8765"
                     remote_environment,
                     cwd.clone(),
                     /*shell*/ None,
-                )
-                .expect("remote cwd URI"),
+                ),
             ],
         };
 
