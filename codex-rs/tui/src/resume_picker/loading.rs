@@ -21,7 +21,6 @@ use codex_app_server_protocol::ThreadSortKey;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use tokio::sync::mpsc;
-use tokio::task::AbortHandle;
 use tokio::task::JoinError;
 use tokio::task::JoinSet;
 use tracing::warn;
@@ -44,6 +43,8 @@ use super::transcript_preview_lines;
 use crate::thread_transcript::thread_to_transcript_cells;
 
 const PAGE_SIZE: usize = 25;
+// Expanded rows read full transcripts, so keep preview I/O narrowly bounded.
+const MAX_CONCURRENT_PREVIEW_READS: usize = 2;
 
 #[derive(Clone)]
 pub(super) struct PageLoadRequest {
@@ -180,26 +181,38 @@ pub(super) fn spawn_app_server_page_loader(
 
 async fn run_picker_loader<F, Fut>(
     mut request_rx: mpsc::UnboundedReceiver<PickerLoadRequest>,
-    mut load_request: F,
+    load_request: F,
 ) where
-    F: FnMut(PickerLoadRequest) -> Fut,
+    F: Fn(PickerLoadRequest) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
+    let (page_tx, page_rx) = mpsc::unbounded_channel();
+    let page_load_request = load_request.clone();
+    let page_task = tokio::spawn(run_page_loader(page_rx, move |request| {
+        page_load_request(PickerLoadRequest::Page(request))
+    }));
+    let (preview_tx, preview_rx) = mpsc::unbounded_channel();
+    let preview_load_request = load_request.clone();
+    let preview_task = tokio::spawn(run_preview_loader(preview_rx, move |thread_id| {
+        preview_load_request(PickerLoadRequest::Preview { thread_id })
+    }));
     let mut tasks = JoinSet::new();
-    let mut page_task: Option<AbortHandle> = None;
     loop {
         tokio::select! {
             request = request_rx.recv() => {
                 let Some(request) = request else {
                     break;
                 };
-                if matches!(&request, PickerLoadRequest::Page(_)) {
-                    if let Some(page_task) = page_task.take() {
-                        page_task.abort();
+                match request {
+                    PickerLoadRequest::Page(request) => {
+                        let _ = page_tx.send(request);
                     }
-                    page_task = Some(tasks.spawn(load_request(request)));
-                } else {
-                    tasks.spawn(load_request(request));
+                    PickerLoadRequest::Preview { thread_id } => {
+                        let _ = preview_tx.send(thread_id);
+                    }
+                    request @ PickerLoadRequest::Transcript { .. } => {
+                        tasks.spawn(load_request(request));
+                    }
                 }
             }
             result = tasks.join_next(), if !tasks.is_empty() => {
@@ -210,9 +223,68 @@ async fn run_picker_loader<F, Fut>(
         }
     }
 
+    drop(page_tx);
+    drop(preview_tx);
+    page_task.abort();
+    log_loader_task_result(page_task.await);
+    preview_task.abort();
+    log_loader_task_result(preview_task.await);
     tasks.abort_all();
     while let Some(result) = tasks.join_next().await {
         log_loader_task_result(result);
+    }
+}
+
+async fn run_preview_loader<F, Fut>(
+    mut request_rx: mpsc::UnboundedReceiver<ThreadId>,
+    mut load_preview: F,
+) where
+    F: FnMut(ThreadId) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let mut tasks = JoinSet::new();
+    let mut request_channel_open = true;
+    while request_channel_open || !tasks.is_empty() {
+        tokio::select! {
+            request = request_rx.recv(), if request_channel_open && tasks.len() < MAX_CONCURRENT_PREVIEW_READS => {
+                match request {
+                    Some(thread_id) => {
+                        tasks.spawn(load_preview(thread_id));
+                    }
+                    None => request_channel_open = false,
+                }
+            }
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(result) = result {
+                    log_loader_task_result(result);
+                }
+            }
+        }
+    }
+}
+
+async fn run_page_loader<F, Fut>(
+    mut request_rx: mpsc::UnboundedReceiver<PageLoadRequest>,
+    load_page: F,
+) where
+    F: Fn(PageLoadRequest) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let mut pending = None;
+    loop {
+        let request = match pending.take() {
+            Some(request) => request,
+            None => {
+                let Some(request) = request_rx.recv().await else {
+                    break;
+                };
+                request
+            }
+        };
+        load_page(request).await;
+        while let Ok(request) = request_rx.try_recv() {
+            pending = Some(request);
+        }
     }
 }
 

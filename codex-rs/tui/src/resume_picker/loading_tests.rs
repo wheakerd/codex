@@ -50,6 +50,18 @@ fn page_only_loader(loader: impl Fn(PageLoadRequest) + Send + Sync + 'static) ->
     })
 }
 
+fn page_request(request_token: usize) -> PageLoadRequest {
+    PageLoadRequest {
+        cursor: None,
+        request_token,
+        search_token: None,
+        cwd_filter: None,
+        provider_filter: ProviderFilter::Any,
+        sort_key: ThreadSortKey::UpdatedAt,
+        seed_from_state_db: true,
+    }
+}
+
 fn recording_picker_state() -> (PickerState, Arc<Mutex<Vec<PageLoadRequest>>>) {
     let recorded_requests = Arc::new(Mutex::new(Vec::new()));
     let request_sink = recorded_requests.clone();
@@ -217,15 +229,7 @@ async fn loader_does_not_block_followup_requests_and_cancels_on_close() {
     }));
 
     request_tx
-        .send(PickerLoadRequest::Page(PageLoadRequest {
-            cursor: None,
-            request_token: 1,
-            search_token: None,
-            cwd_filter: None,
-            provider_filter: ProviderFilter::Any,
-            sort_key: ThreadSortKey::UpdatedAt,
-            seed_from_state_db: true,
-        }))
+        .send(PickerLoadRequest::Page(page_request(1)))
         .expect("send page request");
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), signal_rx.recv())
@@ -252,6 +256,107 @@ async fn loader_does_not_block_followup_requests_and_cancels_on_close() {
         .expect("loader should stop promptly")
         .expect("loader task should not panic");
     assert!(page_dropped.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn page_loader_serializes_and_coalesces_requests() {
+    let (request_tx, request_rx) = mpsc::unbounded_channel();
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let worker_release = release.clone();
+    let worker = tokio::spawn(run_page_loader(request_rx, move |request| {
+        let started_tx = started_tx.clone();
+        let release = worker_release.clone();
+        async move {
+            let _ = started_tx.send(request.request_token);
+            let _permit = release
+                .acquire_owned()
+                .await
+                .expect("release semaphore should remain open");
+        }
+    }));
+
+    request_tx.send(page_request(1)).expect("send first page");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), started_rx.recv())
+            .await
+            .expect("first page should start"),
+        Some(1)
+    );
+    request_tx.send(page_request(2)).expect("send second page");
+    request_tx.send(page_request(3)).expect("send third page");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), started_rx.recv())
+            .await
+            .is_err()
+    );
+
+    release.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), started_rx.recv())
+            .await
+            .expect("latest page should start"),
+        Some(3)
+    );
+
+    drop(request_tx);
+    release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(1), worker)
+        .await
+        .expect("page loader should stop")
+        .expect("page loader should not panic");
+}
+
+#[tokio::test]
+async fn loader_bounds_concurrent_preview_reads() {
+    let (request_tx, request_rx) = mpsc::unbounded_channel();
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let worker_release = release.clone();
+    let worker = tokio::spawn(run_picker_loader(request_rx, move |request| {
+        let started_tx = started_tx.clone();
+        let release = worker_release.clone();
+        async move {
+            if let PickerLoadRequest::Preview { thread_id } = request {
+                let _ = started_tx.send(thread_id);
+                let _permit = release
+                    .acquire_owned()
+                    .await
+                    .expect("release semaphore should remain open");
+            }
+        }
+    }));
+
+    for _ in 0..=MAX_CONCURRENT_PREVIEW_READS {
+        request_tx
+            .send(PickerLoadRequest::Preview {
+                thread_id: ThreadId::new(),
+            })
+            .expect("send preview request");
+    }
+    for _ in 0..MAX_CONCURRENT_PREVIEW_READS {
+        tokio::time::timeout(Duration::from_secs(1), started_rx.recv())
+            .await
+            .expect("preview should start")
+            .expect("preview signal channel should remain open");
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), started_rx.recv())
+            .await
+            .is_err()
+    );
+
+    release.add_permits(MAX_CONCURRENT_PREVIEW_READS + 1);
+    tokio::time::timeout(Duration::from_secs(1), started_rx.recv())
+        .await
+        .expect("queued preview should start")
+        .expect("preview signal channel should remain open");
+
+    drop(request_tx);
+    tokio::time::timeout(Duration::from_secs(1), worker)
+        .await
+        .expect("loader should stop")
+        .expect("loader should not panic");
 }
 
 #[test]
