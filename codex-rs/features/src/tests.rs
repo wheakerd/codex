@@ -690,6 +690,27 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
 }
 
 #[test]
+fn network_proxy_credential_broker_config_enables_network_proxy() {
+    let features_toml = toml::from_str::<FeaturesToml>(
+        r#"
+[network_proxy]
+credential_broker = true
+"#,
+    )
+    .expect("valid feature config");
+    let features = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&features_toml),
+            ..Default::default()
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+
+    assert!(features.enabled(Feature::NetworkProxy));
+}
+
+#[test]
 fn unstable_warning_event_only_mentions_enabled_under_development_features() {
     let mut configured_features = Table::new();
     configured_features.insert("child_agents_md".to_string(), TomlValue::Boolean(true));

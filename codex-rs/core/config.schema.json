@@ -1741,6 +1741,9 @@
         "allow_upstream_proxy": {
           "type": "boolean"
         },
+        "credential_broker": {
+          "type": "boolean"
+        },
         "dangerously_allow_all_unix_sockets": {
           "type": "boolean"
         },

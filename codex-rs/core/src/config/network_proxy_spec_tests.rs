@@ -1,6 +1,8 @@
 use super::*;
+use crate::config::permissions::apply_network_proxy_feature_config;
 use codex_config::NetworkDomainPermissionToml;
 use codex_config::NetworkDomainPermissionsToml;
+use codex_features::NetworkProxyConfigToml;
 use codex_network_proxy::NetworkDomainPermission;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
@@ -38,6 +40,18 @@ fn build_state_with_audit_metadata_threads_metadata_to_state() {
         .build_state_with_audit_metadata(metadata.clone())
         .expect("state should build");
     assert_eq!(state.audit_metadata(), &metadata);
+}
+
+#[test]
+fn network_proxy_credential_broker_feature_config_requires_mitm() {
+    let feature_config = toml::from_str::<NetworkProxyConfigToml>("credential_broker = true")
+        .expect("valid network proxy config");
+    let mut config = NetworkProxyConfig::default();
+
+    apply_network_proxy_feature_config(&mut config, &feature_config);
+
+    assert!(config.network.credential_broker);
+    assert!(config.network.mitm);
 }
 
 #[test]

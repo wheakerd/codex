@@ -142,6 +142,8 @@ pub struct NetworkProxySettings {
     #[serde(default)]
     pub mitm: bool,
     #[serde(default)]
+    pub credential_broker: bool,
+    #[serde(default)]
     pub mitm_hooks: Vec<MitmHookConfig>,
 }
 
@@ -161,6 +163,7 @@ impl Default for NetworkProxySettings {
             unix_sockets: None,
             allow_local_binding: false,
             mitm: false,
+            credential_broker: false,
             mitm_hooks: Vec::new(),
         }
     }
@@ -593,6 +596,7 @@ mod tests {
                 unix_sockets: None,
                 allow_local_binding: false,
                 mitm: false,
+                credential_broker: false,
                 mitm_hooks: Vec::new(),
             }
         );
@@ -658,6 +662,7 @@ mod tests {
                     "unix_sockets": null,
                     "allow_local_binding": false,
                     "mitm": false,
+                    "credential_broker": false,
                     "mitm_hooks": [],
                 }
             })

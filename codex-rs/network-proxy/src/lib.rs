@@ -4,6 +4,7 @@ mod certs;
 mod child_ca;
 mod config;
 mod connect_policy;
+mod credential_broker;
 mod http_proxy;
 mod mitm;
 mod mitm_hook;

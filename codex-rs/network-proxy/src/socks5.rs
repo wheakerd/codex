@@ -241,7 +241,7 @@ async fn handle_socks5_tcp(
         }
     }
 
-    match app_state.host_has_mitm_hooks(&host).await {
+    match app_state.host_requires_mitm(&host).await {
         Ok(true) => {
             emit_socks_block_decision_audit_event(
                 &app_state,
@@ -281,7 +281,7 @@ async fn handle_socks5_tcp(
         }
         Ok(false) => {}
         Err(err) => {
-            error!("failed to inspect MITM hooks for {host}: {err}");
+            error!("failed to inspect MITM requirements for {host}: {err}");
             return Err(io::Error::other("proxy error").into());
         }
     }
@@ -564,6 +564,7 @@ mod tests {
     use rama_net::address::HostWithPort;
     use rama_net::address::SocketAddress;
     use rama_socks5::server::udp::RelayDirection;
+    use std::collections::HashMap;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::sync::Arc;
@@ -694,6 +695,35 @@ mod tests {
         assert_eq!(event.field("server.port"), Some("443"));
         assert_eq!(event.field("http.request.method"), Some("none"));
         assert_eq!(event.field("client.address"), Some("unknown"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_socks5_tcp_blocks_brokered_host_in_full_mode() {
+        let state = Arc::new(network_proxy_state_for_policy(NetworkProxySettings {
+            enabled: true,
+            mode: NetworkMode::Full,
+            mitm: true,
+            credential_broker: true,
+            ..NetworkProxySettings::default()
+        }));
+        let mut env = HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())]);
+        state.virtualize_child_credentials(&mut env);
+        let mut request =
+            TcpRequest::new(HostWithPort::try_from("api.openai.com:443").expect("valid authority"));
+        request.extensions_mut().insert(state.clone());
+
+        let result = handle_socks5_tcp(
+            request,
+            TargetCheckedTcpConnector::new(state.clone()),
+            /*policy_decider*/ None,
+        )
+        .await;
+
+        assert!(result.is_err(), "brokered host should require MITM");
+        let blocked = state.drain_blocked().await.unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].reason, REASON_MITM_REQUIRED);
+        assert_eq!(blocked[0].host, "api.openai.com");
     }
 
     #[tokio::test(flavor = "current_thread")]

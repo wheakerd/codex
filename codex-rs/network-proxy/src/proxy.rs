@@ -707,6 +707,7 @@ impl NetworkProxy {
             runtime_settings.allow_local_binding,
             runtime_settings.mitm_ca_trust_bundle.as_ref(),
         );
+        self.state.virtualize_child_credentials(env);
         let startup_ca_env_keys_present_in_child = ca_env_keys()
             .filter(|&key| is_tracked_startup_ca_env_key(env, key))
             .collect::<Vec<_>>();
