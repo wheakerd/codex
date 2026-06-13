@@ -30,6 +30,7 @@ members = [
     "connectors",
     "config",
     "workload-identity",
+    "workload-identity-aws",
     "workload-identity-azure",
     "workload-identity-gcp",
     "workload-identity-github-actions",
@@ -165,6 +166,7 @@ codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-config = { path = "config" }
 codex-workload-identity = { path = "workload-identity" }
+codex-workload-identity-aws = { path = "workload-identity-aws" }
 codex-workload-identity-azure = { path = "workload-identity-azure" }
 codex-workload-identity-gcp = { path = "workload-identity-gcp" }
 codex-workload-identity-github-actions = { path = "workload-identity-github-actions" }
