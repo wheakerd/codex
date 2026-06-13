@@ -5,7 +5,9 @@ use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_shell_command_sse_response;
 use app_test_support::to_response;
+use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -432,11 +434,17 @@ impl RealtimeE2eHarness {
         Ok(())
     }
 
-    async fn append_handoff(&mut self, thread_id: String, output_text: &str) -> Result<()> {
+    async fn append_handoff(
+        &mut self,
+        thread_id: String,
+        handoff_id: Option<&str>,
+        output_text: &str,
+    ) -> Result<()> {
         let request_id = self
             .mcp
             .send_thread_realtime_append_handoff_request(ThreadRealtimeAppendHandoffParams {
                 thread_id,
+                handoff_id: handoff_id.map(str::to_string),
                 output_text: output_text.to_string(),
             })
             .await?;
@@ -496,6 +504,110 @@ fn session_updated(realtime_session_id: &str) -> Value {
         "type": "session.updated",
         "session": { "id": realtime_session_id, "instructions": "backend prompt" }
     })
+}
+
+#[tokio::test]
+async fn webrtc_v1_client_control_preserves_order_and_validates_output() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let mut harness = RealtimeE2eHarness::new(
+        RealtimeTestVersion::V1,
+        no_main_loop_responses(),
+        realtime_sideband(vec![open_realtime_sideband_connection(vec![
+            vec![session_updated("sess_v1_client_control")],
+            vec![],
+            vec![],
+            vec![],
+        ])]),
+    )
+    .await?;
+
+    let started = harness.start_webrtc_realtime("v=offer\r\n").await?;
+    assert_eq!(started.started.version, RealtimeConversationVersion::V1);
+
+    let append_text_request_id = harness
+        .mcp
+        .send_thread_realtime_append_text_request(ThreadRealtimeAppendTextParams {
+            thread_id: harness.thread_id.clone(),
+            text: "quiet context".to_string(),
+            role: ConversationTextRole::Developer,
+        })
+        .await?;
+    let append_text_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        harness
+            .mcp
+            .read_stream_until_response_message(RequestId::Integer(append_text_request_id)),
+    )
+    .await??;
+    let _: ThreadRealtimeAppendTextResponse = to_response(append_text_response)?;
+
+    harness
+        .append_handoff(
+            harness.thread_id.clone(),
+            Some("handoff_client_control"),
+            "speak this result",
+        )
+        .await?;
+
+    assert_eq!(
+        harness.sideband_outbound_request(/*request_index*/ 1).await,
+        json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "developer",
+                "content": [{
+                    "type": "input_text",
+                    "text": "quiet context",
+                }],
+            },
+        })
+    );
+    assert_eq!(
+        harness.sideband_outbound_request(/*request_index*/ 2).await,
+        json!({
+            "type": "conversation.handoff.append",
+            "handoff_id": "handoff_client_control",
+            "output_text": "speak this result",
+        })
+    );
+
+    harness
+        .append_handoff(harness.thread_id.clone(), Some("handoff_empty"), "")
+        .await?;
+    assert_eq!(
+        harness.sideband_outbound_request(/*request_index*/ 3).await,
+        json!({
+            "type": "conversation.handoff.append",
+            "handoff_id": "handoff_empty",
+            "output_text": "",
+        })
+    );
+
+    let oversized_output = "large output ".repeat(1_001);
+    harness
+        .append_handoff(
+            harness.thread_id.clone(),
+            Some("handoff_oversized"),
+            &oversized_output,
+        )
+        .await?;
+    let error = harness
+        .read_notification::<ErrorNotification>("error")
+        .await?;
+    assert_eq!(error.thread_id, harness.thread_id);
+    assert_eq!(
+        error.error.message,
+        "realtime handoff output exceeds the 1000-token limit"
+    );
+    assert_eq!(
+        error.error.codex_error_info,
+        Some(CodexErrorInfo::BadRequest)
+    );
+
+    harness.shutdown().await;
+    Ok(())
 }
 
 fn v2_background_agent_tool_call(call_id: &str, prompt: &str) -> Value {
@@ -1482,14 +1594,18 @@ async fn webrtc_v1_handoff_request_delegates_context_and_manual_append_speaks() 
     );
 
     harness
-        .append_handoff(harness.thread_id.clone(), "manual spoken v1 update")
+        .append_handoff(
+            harness.thread_id.clone(),
+            Some("handoff_v1"),
+            "manual spoken v1 update",
+        )
         .await?;
     let spoken_append = harness.sideband_outbound_request(/*request_index*/ 2).await;
     assert_eq!(
         spoken_append,
         json!({
             "type": "conversation.handoff.append",
-            "handoff_id": "codex",
+            "handoff_id": "handoff_v1",
             "output_text": "manual spoken v1 update",
         })
     );
@@ -1565,7 +1681,11 @@ async fn realtime_automatic_standalone_output_is_context_and_append_speaks() -> 
     );
 
     harness
-        .append_handoff(harness.thread_id.clone(), "manual voice update")
+        .append_handoff(
+            harness.thread_id.clone(),
+            /*handoff_id*/ None,
+            "manual voice update",
+        )
         .await?;
     assert_v2_progress_update(
         &harness.sideband_outbound_request(/*request_index*/ 2).await,
@@ -1639,7 +1759,11 @@ async fn realtime_automatic_handoff_output_is_context_and_append_speaks() -> Res
     );
 
     harness
-        .append_handoff(harness.thread_id.clone(), "manual spoken update")
+        .append_handoff(
+            harness.thread_id.clone(),
+            /*handoff_id*/ None,
+            "manual spoken update",
+        )
         .await?;
     assert_v2_progress_update(
         &harness.sideband_outbound_request(/*request_index*/ 3).await,

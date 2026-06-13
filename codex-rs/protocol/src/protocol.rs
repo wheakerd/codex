@@ -418,6 +418,7 @@ pub enum ConversationTextRole {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationHandoffParams {
+    pub handoff_id: Option<String>,
     pub output_text: String,
 }
 

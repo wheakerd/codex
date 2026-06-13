@@ -3166,6 +3166,7 @@ mod tests {
             request_id: RequestId::Integer(10),
             params: v2::ThreadRealtimeAppendHandoffParams {
                 thread_id: "thr_123".to_string(),
+                handoff_id: None,
                 output_text: "Short voice update".to_string(),
             },
         };
@@ -3175,6 +3176,7 @@ mod tests {
                 "id": 10,
                 "params": {
                     "threadId": "thr_123",
+                    "handoffId": null,
                     "outputText": "Short voice update"
                 }
             }),

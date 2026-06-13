@@ -1039,6 +1039,7 @@ impl TurnRequestProcessor {
             request_id,
             thread.as_ref(),
             Op::RealtimeConversationHandoff(ConversationHandoffParams {
+                handoff_id: params.handoff_id,
                 output_text: params.output_text,
             }),
         )

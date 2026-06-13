@@ -156,6 +156,9 @@ pub struct ThreadRealtimeAppendTextResponse {}
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeAppendHandoffParams {
     pub thread_id: String,
+    /// V1 handoff ID to append to. Defaults to the standalone Codex handoff ID when omitted.
+    #[ts(optional = nullable)]
+    pub handoff_id: Option<String>,
     pub output_text: String,
 }
 

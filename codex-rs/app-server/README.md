@@ -168,7 +168,7 @@ Example with notification opt-out:
 - `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, and optionally pass `model` and `version` to override configured realtime selection for this session only. By default, automatic backend Codex text follows the legacy speakable handoff path. Pass `autoHandoffOutputAsContext: true` to send automatic backend Codex text as silent developer context, then use `thread/realtime/appendHandoff` when the app wants realtime to speak a backend update. Returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`.
 - `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
 - `thread/realtime/appendText` — append text input to the active realtime session with a required `role` of `user` or `developer` (experimental); returns `{}`. Older clients that omit `role` default to `user`.
-- `thread/realtime/appendHandoff` — append assistant output to the active realtime session (experimental); returns `{}`. For v1 sessions this sends `conversation.handoff.append`.
+- `thread/realtime/appendHandoff` — append assistant output to the active realtime session (experimental); returns `{}`. For v1 sessions, optional `handoffId` selects the handoff to append to and defaults to `codex`; `outputText` is forwarded unchanged as `conversation.handoff.append` when it fits the 1,000-token limit. Oversized v1 output emits an asynchronous `error` notification because realtime input requests are accepted before core processes them.
 - `thread/realtime/stop` — stop the active realtime session for the thread (experimental); returns `{}`.
 - `review/start` — kick off Codex’s automated reviewer for a thread; responds like `turn/start` and emits `item/started`/`item/completed` notifications with `enteredReviewMode` and `exitedReviewMode` items, plus a final assistant `agentMessage` containing the review.
 - `command/exec` — run a single command under the server sandbox without starting a thread/turn (handy for utilities and validation).
@@ -858,7 +858,24 @@ as silent developer context so the realtime model stays coherent without
 automatically speaking backend preambles, progress, or final assistant text. Omit
 the field, or pass `false`, to preserve the legacy speakable handoff behavior.
 Call `thread/realtime/appendHandoff` when the app decides a realtime update
-should be spoken.
+should be spoken. In v1 sessions, pass the `handoffId` from the corresponding
+`thread/realtime/itemAdded` notification when the output belongs to a requested
+handoff. Sequential client `appendText` and `appendHandoff` requests are forwarded
+in request order, so an app can add developer context immediately before appending
+spoken output.
+
+```json
+{ "method": "thread/realtime/appendText", "id": 41, "params": {
+    "threadId": "thr_123",
+    "role": "developer",
+    "text": "The background task reached the test phase."
+} }
+{ "method": "thread/realtime/appendHandoff", "id": 42, "params": {
+    "threadId": "thr_123",
+    "handoffId": "handoff_456",
+    "outputText": "All tests passed."
+} }
+```
 
 ```javascript
 await pc.setRemoteDescription({
