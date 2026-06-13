@@ -320,7 +320,8 @@ url = "ws://127.0.0.1:8765"
             environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
             cwd: cwd.clone(),
         };
-        let initial = TurnEnvironments::resolve(Arc::clone(&manager), &[selection.clone()]).await;
+        let initial =
+            TurnEnvironments::resolve(Arc::clone(&manager), std::slice::from_ref(&selection)).await;
         manager
             .upsert_environment(
                 REMOTE_ENVIRONMENT_ID.to_string(),
